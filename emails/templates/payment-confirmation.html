@@ -1,0 +1,82 @@
+<div style="max-width: 700px; margin: 0 auto; padding: 30px; background-color: #ffffff; border: 1px solid #e0e0e0; border-radius: 10px; font-family: Arial, sans-serif; color: #333;">
+  <!-- Header -->
+  <h1 style="margin: 0 0 25px; font-size: 28px; line-height: 36px; text-align: center; color: #f27a24;">
+    ✅ Payment Confirmation – Order #{{order_id}}
+  </h1>
+
+  <!-- Greeting -->
+  <p style="font-size: 16px; line-height: 26px; color: #444;">
+    Hi {{first_name}} {{last_name}},<br><br>
+    Thank you for your payment! Your transaction has been successfully processed. Below is a summary of your order:
+  </p>
+
+  <!-- Order Details -->
+  <div style="background-color: #fdf8f3; border: 1px solid #f0e0d6; border-radius: 6px; padding: 15px 20px; margin-top: 20px;">
+    <table width="100%" cellspacing="0" cellpadding="6" border="0" style="font-size: 15px; color: #555;">
+      <tr>
+        <td><strong style="color: #333;">Order ID:</strong></td>
+        <td>{{order_id}}</td>
+      </tr>
+      <tr>
+        <td><strong style="color: #333;">Transaction ID:</strong></td>
+        <td>{{payment_id}}</td>
+      </tr>
+      <tr>
+        <td><strong style="color: #333;">Payment Method:</strong></td>
+        <td>{{payment_method}}</td>
+      </tr>
+      <tr>
+        <td><strong style="color: #333;">Date:</strong></td>
+        <td>{{payment_date}}</td>
+      </tr>
+    </table>
+  </div>
+
+  <!-- Items Table -->
+  <h2 style="font-size: 20px; margin: 30px 0 10px; color: #222;">🧾 Order Summary</h2>
+  <table width="100%" cellspacing="0" cellpadding="10" border="1" style="border-collapse: collapse; font-size: 15px; color: #333; border-color: #ddd;">
+    <thead style="background-color: #f6f6f6;">
+      <tr>
+        <th align="left" style="padding: 10px;">Item</th>
+        <th align="center" style="padding: 10px;">Qty</th>
+        <th align="right" style="padding: 10px;">Price</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{#each items}}
+      <tr>
+        <td style="padding: 10px;">{{title}}</td>
+        <td align="center" style="padding: 10px;">{{quantity}}</td>
+        <td align="right" style="padding: 10px;">{{currency}} {{price}}</td>
+      </tr>
+      {{/each}}
+    </tbody>
+    <tfoot>
+      <tr>
+        <td colspan="2" align="right" style="padding: 10px;"><strong>Subtotal:</strong></td>
+        <td align="right" style="padding: 10px;">{{currency}} {{subtotal}}</td>
+      </tr>
+      <tr>
+        <td colspan="2" align="right" style="padding: 10px;"><strong>Tax:</strong></td>
+        <td align="right" style="padding: 10px;">{{currency}} {{tax}}</td>
+      </tr>
+      <tr style="background-color: #fff8f3;">
+        <td colspan="2" align="right" style="padding: 12px; font-size: 16px;"><strong>Total Paid:</strong></td>
+        <td align="right" style="padding: 12px; font-size: 16px; font-weight: bold; color: #f27a24;">{{currency}} {{total}}</td>
+      </tr>
+    </tfoot>
+  </table>
+
+  <!-- Invoice CTA -->
+  <div style="text-align: center; margin: 30px 0;">
+    <a href="{{invoiceUrl}}" style="display: inline-block; padding: 12px 25px; background-color: #f27a24; color: #fff; text-decoration: none; border-radius: 6px; font-size: 15px;">
+      📄 Download Invoice (PDF)
+    </a>
+  </div>
+
+  <!-- Support Footer -->
+  <p style="font-size: 14px; color: #777; text-align: center; line-height: 22px;">
+    If you have any questions about your order, please reach out to our support team at
+    <a href="mailto:{{supportEmail}}" style="color: #f27a24;">{{supportEmail}}</a>.
+  </p>
+</div>

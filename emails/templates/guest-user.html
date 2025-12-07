@@ -1,0 +1,147 @@
+<style>
+    body {
+        margin: 0;
+        padding: 0;
+        font-family: Arial, sans-serif;
+        background-color: #f4f4f4;
+        color: #333;
+        line-height: 1.6;
+    }
+
+    table {
+        width: 100%;
+        border-spacing: 0;
+    }
+
+    .container {
+        max-width: 600px;
+        margin: 40px auto;
+        background: #ffffff;
+        border-radius: 12px;
+        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.1);
+        overflow: hidden;
+    }
+
+    .header {
+        background: linear-gradient(135deg, #4caf50, #81c784);
+        color: #ffffff;
+        padding: 40px 30px;
+        text-align: center;
+    }
+
+    .header h1 {
+        margin: 0;
+        font-size: 28px;
+        font-weight: bold;
+        letter-spacing: 1px;
+    }
+
+    .content {
+        padding: 40px 30px;
+        text-align: left;
+    }
+
+    .content p {
+        font-size: 16px;
+        color: #555555;
+        margin: 0 0 24px;
+    }
+
+    .info-box {
+        background: #f9f9f9;
+        padding: 20px;
+        border: 1px solid #e0e0e0;
+        border-radius: 8px;
+        margin: 20px 0;
+    }
+
+    .info-box p {
+        margin: 10px 0;
+        font-size: 16px;
+    }
+
+    .info-box strong {
+        color: #4caf50;
+    }
+
+    .btn {
+        display: inline-block;
+        padding: 14px 30px;
+        font-size: 16px;
+        color: #ffffff;
+        background: #4caf50;
+        text-decoration: none;
+        border-radius: 8px;
+        font-weight: bold;
+        box-shadow: 0 4px 12px rgba(76, 175, 80, 0.3);
+        transition: background 0.3s;
+    }
+
+    .btn:hover {
+        background: #388e3c;
+    }
+
+    .footer {
+        padding: 30px;
+        text-align: center;
+        background: #f1f1f1;
+        color: #777777;
+        font-size: 14px;
+    }
+
+    .footer a {
+        color: #4caf50;
+        text-decoration: none;
+    }
+
+    .footer a:hover {
+        text-decoration: underline;
+    }
+
+    @media screen and (max-width: 600px) {
+
+        .content,
+        .header,
+        .footer {
+            padding: 20px;
+        }
+
+        .btn {
+            padding: 12px 24px;
+        }
+    }
+</style>
+
+<table class="container" role="presentation" cellspacing="0" cellpadding="0" border="0">
+
+    <!-- Header -->
+    <tr>
+        <td class="header">
+            <h1>Welcome to {{siteName}}!</h1>
+        </td>
+    </tr>
+
+    <!-- Content -->
+    <tr>
+        <td class="content">
+            <p>Hello <strong>{{userName}}</strong>,</p>
+            <p>We're excited to have you on board! Below are your login credentials and access link. Please keep this
+                information secure.</p>
+
+            <!-- User Info -->
+            <div class="info-box">
+                <p><strong>Username:</strong> {{userEmail}}</p>
+                <p><strong>Password:</strong> {{userPassword}}</p>
+            </div>
+
+            <!-- Login Button -->
+            <p style="text-align: center;">
+                <a href="{{loginUrl}}" class="btn" target="_blank">Log In to Your Account</a>
+            </p>
+
+            <p>If you have any questions, feel free to reach out to our support team.</p>
+        </td>
+    </tr>
+
+
+</table>

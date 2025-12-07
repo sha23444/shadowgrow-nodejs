@@ -1,0 +1,42 @@
+<div style="max-width: 600px; margin: 40px auto; padding: 32px; background-color: #f9f9f9; font-family: 'Segoe UI', sans-serif; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
+    <div style="text-align: center; margin-bottom: 24px;">
+      <div style="font-size: 40px; color: #007bff;">💰</div>
+      <h2 style="margin: 10px 0 0; color: #222;">Credit Received</h2>
+    </div>
+  
+    <p style="font-size: 16px; color: #555; line-height: 1.6;">
+      Hi <strong>{{receiver}}</strong>,<br><br>
+      You've received <strong>{{currency}} {{amount}}</strong> in your wallet from <strong>{{sender}}</strong>.
+    </p>
+  
+    <div style="margin-top: 24px; background: #fff; border: 1px solid #e5e5e5; border-radius: 10px; padding: 20px;">
+      <table style="width: 100%; font-size: 15px; color: #444; border-collapse: collapse;">
+        <tr style="border-bottom: 1px solid #f0f0f0;">
+          <td style="padding: 10px 0;"><strong>Sender</strong></td>
+          <td style="text-align: right;">{{sender}}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid #f0f0f0;">
+          <td style="padding: 10px 0;"><strong>Transaction ID</strong></td>
+          <td style="text-align: right;">{{receiver_transaction_id}}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid #f0f0f0;">
+          <td style="padding: 10px 0;"><strong>Date</strong></td>
+          <td style="text-align: right;">{{transaction_date}}</td>
+        </tr>
+        <tr style="border-bottom: 1px solid #f0f0f0;">
+          <td style="padding: 10px 0;"><strong>Amount Received</strong></td>
+          <td style="text-align: right;">{{currency}} {{amount}}</td>
+        </tr>
+        <tr>
+          <td style="padding: 10px 0;"><strong>Updated Wallet Balance</strong></td>
+          <td style="text-align: right;">{{currency}} {{receiver_balance}}</td>
+        </tr>
+      </table>
+    </div>
+  
+    <p style="margin-top: 30px; font-size: 14px; color: #777; text-align: center;">
+      Want to see more details? <br>
+      Log in to your account to view your full transaction history.
+    </p>
+  </div>
+  

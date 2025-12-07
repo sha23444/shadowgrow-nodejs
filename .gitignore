@@ -1,0 +1,77 @@
+# Node modules
+node_modules/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# dotenv environment variables
+.env
+.env.test
+.env.local
+
+# OS system files
+.DS_Store
+Thumbs.db
+
+# Optional npm cache directory
+.npm/
+
+# Coverage directory used by tools like Istanbul
+coverage/
+
+# IDEs and editors
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# Build output
+dist/
+build/
+
+# TypeScript
+*.tsbuildinfo
+
+# Misc
+*.tgz
+*.zip
+*.tar.gz
+*.tar
+*.gz
+*.7z
+*.rar
+*.bz2
+
+logs/
+
+logs/app.log
+
+
+/public
+/logs
+/.geck
+bin/
+
+binjobs/cron_logs.json
+jobs/cron_logs.json
+
+# Uploads directory (product images - too large for git)
+uploads/
+uploads/products/
+controllers/admin/filewale-457317-6121e8015304.json
+config/google-drive-credentials.json
+*.json
+schema.sql
+schema.sql
+controllers/admin/filewale-*.json
+config/*credentials*.json

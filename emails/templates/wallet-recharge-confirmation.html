@@ -1,0 +1,69 @@
+<div style="max-width: 720px; margin: 0 auto; padding: 30px; background-color: #ffffff; font-family: Arial, sans-serif; border: 1px solid #e0e0e0; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
+
+    <!-- Header -->
+    <h1 style="margin: 0 0 25px; font-size: 26px; color: #27ae60; text-align: center;">
+      💰 Wallet Recharge Successful
+    </h1>
+  
+    <!-- Greeting -->
+    <p style="font-size: 16px; color: #555;">
+      Hi {{first_name}} {{last_name}},<br><br>
+      We've successfully processed your wallet recharge. Below is a summary of the transaction:
+    </p>
+  
+    <!-- Recharge Info -->
+    <table width="100%" cellpadding="10" cellspacing="0" style="margin-top: 20px; font-size: 15px; color: #333; background-color: #f9f9f9; border-radius: 6px;">
+      <tr>
+        <td><div style="font-weight: 600;">Order ID:</div></td>
+        <td>{{order_id}}</td>
+      </tr>
+      <tr>
+        <td><div style="font-weight: 600;">Payment ID:</div></td>
+        <td>{{payment_id}}</td>
+      </tr>
+      <tr>
+        <td><div style="font-weight: 600;">Date:</div></td>
+        <td>{{payment_date}}</td>
+      </tr>
+      <tr>
+        <td><div style="font-weight: 600;">Payment Method:</div></td>
+        <td>{{payment_method}}</td>
+      </tr>
+    </table>
+  
+    <!-- Wallet Summary -->
+    <h3 style="font-size: 18px; color: #222; margin-top: 30px;">🔄 Wallet Summary</h3>
+    <table width="100%" cellpadding="10" cellspacing="0" style="font-size: 15px; color: #333; background-color: #fcfcfc; border-radius: 6px;">
+      <tr>
+        <td><div style="font-weight: 600;">Previous Balance:</div></td>
+        <td>{{wallet_currency}} {{previous_balance}}</td>
+      </tr>
+      <tr>
+        <td><div style="font-weight: 600;">Recharge Amount:</div></td>
+        <td>{{wallet_currency}} {{amount}}</td>
+      </tr>
+      {{#if show_exchange_rate}}
+      <tr>
+        <td><div style="font-weight: 600;">Exchange Rate:</div></td>
+        <td>{{currency}} {{exchange_rate}}</td>
+      </tr>
+      {{/if}}
+      
+      <tr style="background-color: #f4f9f4;">
+        <td><div style="font-weight: 600;">New Balance:</div></td>
+        <td style="color: #27ae60;"><div style="font-weight: 500;">{{wallet_currency}} {{new_balance}}</strong></td>
+      </tr>
+    </table>
+  
+    <!-- Info Note -->
+    <p style="font-size: 14px; color: #999; text-align: center; margin-top: 30px;">
+      ⚠️ Please note: This transaction is recorded in your wallet history. For any questions, contact us within 24 hours.
+    </p>
+  
+    <!-- Support -->
+    <p style="font-size: 14px; color: #777; text-align: center; margin-top: 20px;">
+      Need help? Contact us at 
+      <a href="mailto:{{supportEmail}}" style="color: #007BFF;">{{supportEmail}}</a>
+    </p>
+  </div>
+  

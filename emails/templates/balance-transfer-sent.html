@@ -1,0 +1,42 @@
+<div style="max-width: 600px; margin: 40px auto; padding: 32px; background-color: #f9f9f9; font-family: 'Segoe UI', sans-serif; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
+  <div style="text-align: center; margin-bottom: 24px;">
+    <div style="font-size: 40px; color: #28a745;">✅</div>
+    <h2 style="margin: 10px 0 0; color: #222;">Transfer Successful</h2>
+  </div>
+
+  <p style="font-size: 16px; color: #555; line-height: 1.6;">
+    Hi <strong>{{sender}}</strong>,<br><br>
+    Your transfer of <strong>{{currency}} {{amount}}</strong> to <strong>{{receiver}}</strong> has been successfully completed.
+  </p>
+
+  <div style="margin-top: 24px; background: #fff; border: 1px solid #e5e5e5; border-radius: 10px; padding: 20px;">
+    <table style="width: 100%; font-size: 15px; color: #444; border-collapse: collapse;">
+      <tr style="border-bottom: 1px solid #f0f0f0;">
+        <td style="padding: 10px 0;"><strong>Transaction ID</strong></td>
+        <td style="text-align: right;">{{sender_transaction_id}}</td>
+      </tr>
+      <tr style="border-bottom: 1px solid #f0f0f0;">
+        <td style="padding: 10px 0;"><strong>Date</strong></td>
+        <td style="text-align: right;">{{transaction_date}}</td>
+      </tr>
+      <tr style="border-bottom: 1px solid #f0f0f0;">
+        <td style="padding: 10px 0;"><strong>Transferred To</strong></td>
+        <td style="text-align: right;">{{receiver}}</td>
+      </tr>
+      <tr style="border-bottom: 1px solid #f0f0f0;">
+        <td style="padding: 10px 0;"><strong>Amount</strong></td>
+        <td style="text-align: right;">{{currency}} {{amount}}</td>
+      </tr>
+      <tr>
+        <td style="padding: 10px 0;"><strong>New Wallet Balance</strong></td>
+        <td style="text-align: right;">{{currency}} {{sender_balance}}</td>
+      </tr>
+    </table>
+  </div>
+
+  <p style="margin-top: 30px; font-size: 14px; color: #777; text-align: center;">
+    Didn’t authorize this transaction? <br>
+    Contact us immediately at
+    <a href="mailto:{{supportEmail}}" style="color: #007bff; text-decoration: none;">{{supportEmail}}</a>.
+  </p>
+</div>
