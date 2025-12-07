@@ -65,16 +65,13 @@ bin/
 binjobs/cron_logs.json
 jobs/cron_logs.json
 
-# Uploads directory (product images - too large for git)
-uploads/
-uploads/products/
+
 controllers/admin/filewale-457317-6121e8015304.json
 config/google-drive-credentials.json
 # Exclude credential JSON files but keep package.json and package-lock.json
 *-credentials.json
 *credentials*.json
 filewale-*.json
-schema.sql
-schema.sql
 controllers/admin/filewale-*.json
 config/*credentials*.json
+ 

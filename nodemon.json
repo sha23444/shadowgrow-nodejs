@@ -1,0 +1,10 @@
+{
+  "watch": ["bin", "app.js", "routes", "controllers", "services", "config", "jobs"],
+  "ext": "js,json",
+  "ignore": ["node_modules", "logs", "coverage", "test-results", "playwright-report"],
+  "env": {
+    "NODE_ENV": "development"
+  },
+  "verbose": true
+}
+
