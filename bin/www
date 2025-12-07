@@ -1,0 +1,107 @@
+#!/usr/bin/env node
+
+/**
+ * Module dependencies.
+ */
+var app = require('../app');
+var debug = require('debug')('backend:server');
+var http = require('http');
+
+/**
+ * Normalize a port into a number, string, or false.
+ */
+var port = process.env.PORT || 3000;
+app.set('port', port);
+
+/**
+ * Create HTTP server.
+ */
+var server = http.createServer(app);
+
+// Initialize Socket.IO and attach to app
+try {
+  const { Server } = require('socket.io');
+  const io = new Server(server, {
+    cors: {
+      origin: '*',
+      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+      credentials: true,
+    },
+    transports: ['websocket', 'polling'],
+  });
+
+  // Basic namespace/room handling for booking updates
+  io.on('connection', (socket) => {
+    socket.on('booking:join', (bookingId) => {
+      if (!bookingId) return;
+      socket.join(`booking:${bookingId}`);
+    });
+    socket.on('disconnect', () => {});
+  });
+
+  // Expose io for controllers to emit events
+  app.set('io', io);
+} catch (e) {
+  console.warn('Socket.IO initialization failed:', e?.message);
+}
+
+/**
+ * Listen on provided port, on all network interfaces.
+ */
+server.listen(port, '0.0.0.0', () => {
+  console.log(`Server is running on port ${port}`);
+});
+
+server.on('error', onError);
+server.on('listening', onListening);
+
+/**
+ * Normalize a port into a number, string, or false.
+ */
+function normalizePort(val) {
+  var port = parseInt(val, 10);
+  if (isNaN(port)) {
+    return val;
+  }
+  if (port >= 0) {
+    return port;
+  }
+  return false;
+}
+
+/**
+ * Event listener for HTTP server "error" event.
+ */
+function onError(error) {
+  if (error.syscall !== 'listen') {
+    throw error;
+  }
+
+  var bind = typeof port === 'string'
+    ? 'Pipe ' + port
+    : 'Port ' + port;
+
+  switch (error.code) {
+    case 'EACCES':
+      console.error(bind + ' requires elevated privileges');
+      process.exit(1);
+      break;
+    case 'EADDRINUSE':
+      console.error(bind + ' is already in use');
+      process.exit(1);
+      break;
+    default:
+      throw error;
+  }
+}
+
+/**
+ * Event listener for HTTP server "listening" event.
+ */
+function onListening() {
+  var addr = server.address();
+  var bind = typeof addr === 'string'
+    ? 'pipe ' + addr
+    : 'port ' + addr.port;
+  debug('Listening on ' + bind);
+}

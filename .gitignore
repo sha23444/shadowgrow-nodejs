@@ -60,7 +60,6 @@ logs/app.log
 /public
 /logs
 /.geck
-bin/
 
 binjobs/cron_logs.json
 jobs/cron_logs.json
