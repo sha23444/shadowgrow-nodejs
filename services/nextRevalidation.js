@@ -4,7 +4,7 @@
 const axios = require('axios');
 
 // Get frontend URL from environment or use default
-const FRONTEND_URL = process.env.APP_BASE_URL;
+const APP_BASE_URL = process.env.APP_BASE_URL;
 const REVALIDATE_SECRET = process.env.REVALIDATE_SECRET || "T+DdbCU72nmUXSAgM+8QaUTObsMeqcfUCl7WjurnIE=";
 
 /**
@@ -14,7 +14,7 @@ const REVALIDATE_SECRET = process.env.REVALIDATE_SECRET || "T+DdbCU72nmUXSAgM+8Q
  */
 async function revalidatePaths(paths) {
   // Skip if in development and frontend is not running
-  if (process.env.NODE_ENV === 'development' && !FRONTEND_URL.includes('localhost')) {
+  if (process.env.NODE_ENV === 'development' && !APP_BASE_URL.includes('localhost')) {
     console.log('⏭️  Skipping Next.js revalidation in development');
     return false;
   }
@@ -24,7 +24,7 @@ async function revalidatePaths(paths) {
     const revalidatePromises = paths.map(async (path) => {
       try {
         const response = await axios.post(
-          `${FRONTEND_URL}/api/revalidate`,
+          `${APP_BASE_URL}/api/revalidate`,
           { 
             path,
             secret: REVALIDATE_SECRET 

@@ -48,8 +48,8 @@ function configureMiddleware(app) {
   const allowedOrigins = [
     'http://localhost:3000',
     'http://localhost:3001',
-    process.env.FRONTEND_URL,
-    process.env.ADMIN_URL,
+    process.env.APP_BASE_URL,
+    process.env.ADMIN_BASE_URL,
   ].filter(Boolean); // Remove undefined values
 
   app.use(
