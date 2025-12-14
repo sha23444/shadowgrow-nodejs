@@ -16,10 +16,10 @@ const originalPool = mysql.createPool({
   // Ensure initial TCP connection attempts fail fast instead of hanging
   connectTimeout: parseInt(process.env.DB_CONNECT_TIMEOUT_MS || '10000', 10),
   
-  // Connection pool settings - optimized for MILLION+ daily traffic
+  // Connection pool settings - optimized for VPS with limited resources
   waitForConnections: true,
-  connectionLimit: parseInt(process.env.DB_CONNECTION_LIMIT) || 100, // Increased to 100 for million+ daily traffic
-  queueLimit: parseInt(process.env.DB_QUEUE_LIMIT) || 500, // Increased to 500 to handle high request volume
+  connectionLimit: parseInt(process.env.DB_CONNECTION_LIMIT) || 10, // Reduced to 10 for VPS stability (was 100)
+  queueLimit: parseInt(process.env.DB_QUEUE_LIMIT) || 50, // Reduced to 50 to prevent memory exhaustion (was 500)
   
   // Note: mysql2 does not support acquireTimeout/timeout at pool level
   
@@ -392,7 +392,7 @@ testConnectionWithRetry()
 // Set up periodic health checks (every 5 minutes for high-traffic production)
 // Reduced frequency to minimize overhead with 1M+ visitors
 const HEALTH_CHECK_INTERVAL = parseInt(process.env.DB_HEALTH_CHECK_INTERVAL) || 300000; // 5 minutes
-setInterval(checkConnectionHealth, HEALTH_CHECK_INTERVAL);
+let healthCheckInterval = setInterval(checkConnectionHealth, HEALTH_CHECK_INTERVAL);
 
 // Add connection pool event handlers (logging disabled for high-traffic production)
 // These events are tracked silently - only errors are logged
@@ -452,6 +452,13 @@ originalPool.on('error', (err) => {
 // Add graceful shutdown handling
 process.on('SIGINT', () => {
   console.log('🛑 Gracefully shutting down database connections...');
+  
+  // Clear health check interval to prevent memory leak
+  if (healthCheckInterval) {
+    clearInterval(healthCheckInterval);
+    healthCheckInterval = null;
+  }
+  
   originalPool.end((err) => {
     if (err) {
       console.error('Error closing database pool:', err.message);
@@ -464,6 +471,13 @@ process.on('SIGINT', () => {
 
 process.on('SIGTERM', () => {
   console.log('🛑 Gracefully shutting down database connections...');
+  
+  // Clear health check interval to prevent memory leak
+  if (healthCheckInterval) {
+    clearInterval(healthCheckInterval);
+    healthCheckInterval = null;
+  }
+  
   originalPool.end((err) => {
     if (err) {
       console.error('Error closing database pool:', err.message);
