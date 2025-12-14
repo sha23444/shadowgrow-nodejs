@@ -24,6 +24,7 @@ async function addProduct(req, res) {
     requires_shipping_address = true,
     is_digital_download = false,
     requires_activation_key = false,
+    requires_manual_processing = false,
     digital_file_url = null,
     digital_delivery_time = null,
     delivery_instructions = null,
@@ -84,8 +85,71 @@ async function addProduct(req, res) {
   const validatedShippingCost = shipping_cost === '' || shipping_cost === null ? null : parseFloat(shipping_cost);
   const validatedFreeShippingThreshold = free_shipping_threshold === '' || free_shipping_threshold === null ? null : parseFloat(free_shipping_threshold);
   const validatedEstimatedDeliveryDays = estimated_delivery_days === '' || estimated_delivery_days === null ? null : parseInt(estimated_delivery_days);
-  const validatedDownloadLimit = download_limit === '' || download_limit === null ? null : parseInt(download_limit);
-  const validatedDownloadExpiryDays = download_expiry_days === '' || download_expiry_days === null ? null : parseInt(download_expiry_days);
+  // Validate download_limit (must be positive integer if provided)
+  let validatedDownloadLimit = null;
+  if (download_limit !== '' && download_limit !== null && download_limit !== undefined) {
+    const parsed = parseInt(download_limit);
+    if (isNaN(parsed) || parsed < 1) {
+      return res.status(400).json({ 
+        error: "Download limit must be a positive integer (1 or greater) if provided." 
+      });
+    }
+    validatedDownloadLimit = parsed;
+  }
+
+  // Validate download_expiry_days (must be positive integer if provided)
+  let validatedDownloadExpiryDays = null;
+  if (download_expiry_days !== '' && download_expiry_days !== null && download_expiry_days !== undefined) {
+    const parsed = parseInt(download_expiry_days);
+    if (isNaN(parsed) || parsed < 1) {
+      return res.status(400).json({ 
+        error: "Download expiry days must be a positive integer (1 or greater) if provided." 
+      });
+    }
+    validatedDownloadExpiryDays = parsed;
+  }
+
+  // Validate digital_delivery_time (string, max 255 chars if provided)
+  let validatedDigitalDeliveryTime = null;
+  if (digital_delivery_time !== null && digital_delivery_time !== undefined && digital_delivery_time !== '') {
+    if (typeof digital_delivery_time !== 'string' || digital_delivery_time.length > 255) {
+      return res.status(400).json({ 
+        error: "Digital delivery time must be a string with maximum 255 characters." 
+      });
+    }
+    validatedDigitalDeliveryTime = digital_delivery_time.trim();
+  }
+
+  // Validate delivery_instructions (text field, max 5000 chars if provided)
+  let validatedDeliveryInstructions = null;
+  if (delivery_instructions !== null && delivery_instructions !== undefined && delivery_instructions !== '') {
+    if (typeof delivery_instructions !== 'string' || delivery_instructions.length > 5000) {
+      return res.status(400).json({ 
+        error: "Delivery instructions must be a string with maximum 5000 characters." 
+      });
+    }
+    validatedDeliveryInstructions = delivery_instructions.trim();
+  }
+
+  // Validate digital_file_url (must be valid URL if provided)
+  let validatedDigitalFileUrl = null;
+  if (digital_file_url !== null && digital_file_url !== undefined && digital_file_url !== '') {
+    if (typeof digital_file_url !== 'string') {
+      return res.status(400).json({ 
+        error: "Digital file URL must be a string." 
+      });
+    }
+    const trimmedUrl = digital_file_url.trim();
+    // Basic URL validation
+    try {
+      new URL(trimmedUrl);
+      validatedDigitalFileUrl = trimmedUrl;
+    } catch (urlError) {
+      return res.status(400).json({ 
+        error: "Digital file URL must be a valid URL format." 
+      });
+    }
+  }
   const validatedLowStockThreshold = low_stock_threshold === '' || low_stock_threshold === null ? null : parseInt(low_stock_threshold);
   const validatedWeight = weight === '' || weight === null ? null : parseFloat(weight);
   const validatedLength = length === '' || length === null ? null : parseFloat(length);
@@ -221,9 +285,9 @@ async function addProduct(req, res) {
       `INSERT INTO res_products (
         product_name, sku, slug, original_price, sale_price, stock_quantity, short_description, description, manufacturer, supplier, 
         status, product_type, is_featured, rating, reviews_count, delivery_method, shipping_cost, free_shipping_threshold, estimated_delivery_days, requires_shipping_address,
-        is_digital_download, requires_activation_key, digital_file_url, digital_delivery_time, delivery_instructions, download_limit, download_expiry_days, track_inventory,
+        is_digital_download, requires_activation_key, requires_manual_processing, digital_file_url, digital_delivery_time, delivery_instructions, download_limit, download_expiry_days, track_inventory,
         allow_backorder, low_stock_threshold, weight, length, width, height, duration, service_type, requires_consultation, is_customizable, service_location_type, is_service_available
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         product_name,
         finalSku,
@@ -247,9 +311,9 @@ async function addProduct(req, res) {
         requires_shipping_address,
         is_digital_download,
         requires_activation_key,
-        digital_file_url,
-        digital_delivery_time,
-        delivery_instructions,
+        validatedDigitalFileUrl !== null ? validatedDigitalFileUrl : digital_file_url,
+        validatedDigitalDeliveryTime !== null ? validatedDigitalDeliveryTime : digital_delivery_time,
+        validatedDeliveryInstructions !== null ? validatedDeliveryInstructions : delivery_instructions,
         validatedDownloadLimit,
         validatedDownloadExpiryDays,
         track_inventory,
@@ -456,7 +520,17 @@ async function addProduct(req, res) {
             [productId, key]
           );
         }
+
+        // Update product inventory based on activation keys count
+        const ProductInventoryService = require('../../services/ProductInventoryService');
+        await ProductInventoryService.updateProductInventory(productId, connection);
       }
+    }
+
+    // Update product inventory if it's a digital product (after digital_file_url or activation keys changes)
+    if (is_digital_download === 1 || validatedProductType === 'digital') {
+      const ProductInventoryService = require('../../services/ProductInventoryService');
+      await ProductInventoryService.updateProductInventory(productId, connection);
     }
 
     await connection.commit();
@@ -557,6 +631,7 @@ async function updateProduct(req, res) {
     requires_shipping_address = true,
     is_digital_download = false,
     requires_activation_key = false,
+    requires_manual_processing = false,
     digital_file_url = null,
     digital_delivery_time = null,
     delivery_instructions = null,
@@ -608,8 +683,71 @@ async function updateProduct(req, res) {
   const validatedShippingCost = shipping_cost === '' || shipping_cost === null ? null : parseFloat(shipping_cost);
   const validatedFreeShippingThreshold = free_shipping_threshold === '' || free_shipping_threshold === null ? null : parseFloat(free_shipping_threshold);
   const validatedEstimatedDeliveryDays = estimated_delivery_days === '' || estimated_delivery_days === null ? null : parseInt(estimated_delivery_days);
-  const validatedDownloadLimit = download_limit === '' || download_limit === null ? null : parseInt(download_limit);
-  const validatedDownloadExpiryDays = download_expiry_days === '' || download_expiry_days === null ? null : parseInt(download_expiry_days);
+  // Validate download_limit (must be positive integer if provided)
+  let validatedDownloadLimit = null;
+  if (download_limit !== '' && download_limit !== null && download_limit !== undefined) {
+    const parsed = parseInt(download_limit);
+    if (isNaN(parsed) || parsed < 1) {
+      return res.status(400).json({ 
+        error: "Download limit must be a positive integer (1 or greater) if provided." 
+      });
+    }
+    validatedDownloadLimit = parsed;
+  }
+
+  // Validate download_expiry_days (must be positive integer if provided)
+  let validatedDownloadExpiryDays = null;
+  if (download_expiry_days !== '' && download_expiry_days !== null && download_expiry_days !== undefined) {
+    const parsed = parseInt(download_expiry_days);
+    if (isNaN(parsed) || parsed < 1) {
+      return res.status(400).json({ 
+        error: "Download expiry days must be a positive integer (1 or greater) if provided." 
+      });
+    }
+    validatedDownloadExpiryDays = parsed;
+  }
+
+  // Validate digital_delivery_time (string, max 255 chars if provided)
+  let validatedDigitalDeliveryTime = null;
+  if (digital_delivery_time !== null && digital_delivery_time !== undefined && digital_delivery_time !== '') {
+    if (typeof digital_delivery_time !== 'string' || digital_delivery_time.length > 255) {
+      return res.status(400).json({ 
+        error: "Digital delivery time must be a string with maximum 255 characters." 
+      });
+    }
+    validatedDigitalDeliveryTime = digital_delivery_time.trim();
+  }
+
+  // Validate delivery_instructions (text field, max 5000 chars if provided)
+  let validatedDeliveryInstructions = null;
+  if (delivery_instructions !== null && delivery_instructions !== undefined && delivery_instructions !== '') {
+    if (typeof delivery_instructions !== 'string' || delivery_instructions.length > 5000) {
+      return res.status(400).json({ 
+        error: "Delivery instructions must be a string with maximum 5000 characters." 
+      });
+    }
+    validatedDeliveryInstructions = delivery_instructions.trim();
+  }
+
+  // Validate digital_file_url (must be valid URL if provided)
+  let validatedDigitalFileUrl = null;
+  if (digital_file_url !== null && digital_file_url !== undefined && digital_file_url !== '') {
+    if (typeof digital_file_url !== 'string') {
+      return res.status(400).json({ 
+        error: "Digital file URL must be a string." 
+      });
+    }
+    const trimmedUrl = digital_file_url.trim();
+    // Basic URL validation
+    try {
+      new URL(trimmedUrl);
+      validatedDigitalFileUrl = trimmedUrl;
+    } catch (urlError) {
+      return res.status(400).json({ 
+        error: "Digital file URL must be a valid URL format." 
+      });
+    }
+  }
   const validatedLowStockThreshold = low_stock_threshold === '' || low_stock_threshold === null ? null : parseInt(low_stock_threshold);
   const validatedWeight = weight === '' || weight === null ? null : parseFloat(weight);
   const validatedLength = length === '' || length === null ? null : parseFloat(length);
@@ -768,7 +906,7 @@ async function updateProduct(req, res) {
         product_name = ?, sku = ?, slug = ?, original_price = ?, sale_price = ?, stock_quantity = ?, short_description = ?, description = ?, 
         manufacturer = ?, supplier = ?, status = ?, product_type = ?, is_featured = ?, rating = ?, reviews_count = ?,
         delivery_method = ?, shipping_cost = ?, free_shipping_threshold = ?, estimated_delivery_days = ?, requires_shipping_address = ?,
-        is_digital_download = ?, requires_activation_key = ?, digital_file_url = ?, digital_delivery_time = ?, delivery_instructions = ?, download_limit = ?, download_expiry_days = ?,
+        is_digital_download = ?, requires_activation_key = ?, requires_manual_processing = ?, digital_file_url = ?, digital_delivery_time = ?, delivery_instructions = ?, download_limit = ?, download_expiry_days = ?,
         track_inventory = ?, allow_backorder = ?, low_stock_threshold = ?, weight = ?, length = ?, width = ?, height = ?,
         duration = ?, service_type = ?, requires_consultation = ?, is_customizable = ?, service_location_type = ?, is_service_available = ?
         WHERE product_id = ?`,
@@ -795,9 +933,10 @@ async function updateProduct(req, res) {
         requires_shipping_address,
         is_digital_download,
         requires_activation_key,
-        digital_file_url,
-        digital_delivery_time,
-        delivery_instructions,
+        requires_manual_processing,
+        validatedDigitalFileUrl !== null ? validatedDigitalFileUrl : digital_file_url,
+        validatedDigitalDeliveryTime !== null ? validatedDigitalDeliveryTime : digital_delivery_time,
+        validatedDeliveryInstructions !== null ? validatedDeliveryInstructions : delivery_instructions,
         validatedDownloadLimit,
         validatedDownloadExpiryDays,
         track_inventory,
@@ -1002,6 +1141,8 @@ async function updateProduct(req, res) {
           `DELETE FROM res_product_activation_keys WHERE product_id = ?`,
           [product_id]
         );
+        
+        // Note: Inventory will be updated after new keys are inserted below
 
         // Create a batch for tracking (optional)
         const batchName = `Auto-generated batch ${new Date().toISOString()}`;
@@ -1020,7 +1161,17 @@ async function updateProduct(req, res) {
             [product_id, key]
           );
         }
+
+        // Update product inventory based on activation keys count
+        const ProductInventoryService = require('../../services/ProductInventoryService');
+        await ProductInventoryService.updateProductInventory(product_id, connection);
       }
+    }
+
+    // Update product inventory if it's a digital product (after digital_file_url or activation keys changes)
+    if (is_digital_download === 1 || product_type === 'digital') {
+      const ProductInventoryService = require('../../services/ProductInventoryService');
+      await ProductInventoryService.updateProductInventory(product_id, connection);
     }
 
     await connection.commit();
@@ -1184,6 +1335,10 @@ async function getProductList(req, res) {
         p.status,
         p.product_type,
         p.slug,
+        p.is_digital_download,
+        p.requires_activation_key,
+        p.digital_file_url,
+        p.track_inventory,
         p.created_at,
         p.updated_at
       FROM res_products p
@@ -1355,6 +1510,10 @@ async function getProductList(req, res) {
       sale_price: product.sale_price,
       original_price: product.original_price,
       slug: product.slug,
+      is_digital_download: product.is_digital_download,
+      requires_activation_key: product.requires_activation_key,
+      digital_file_url: product.digital_file_url,
+      track_inventory: product.track_inventory,
       created_at: product.created_at,
       updated_at: product.updated_at,
     }));

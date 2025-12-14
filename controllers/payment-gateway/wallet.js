@@ -226,9 +226,16 @@ async function createOrder(req, res) {
 
     const transactionId = txnResult.insertId;
 
+    // Determine order status: Physical products (item_type 6) should remain Pending (1) for admin approval
+    // Digital products can be Completed (7) immediately, EXCEPT if they require manual processing
+    const { hasManualProcessingProducts } = require('./helper');
+    const orderItemTypes = orderDetails.item_types ? (typeof orderDetails.item_types === 'string' ? JSON.parse(orderDetails.item_types) : orderDetails.item_types) : [];
+    const hasManualProcessing = await hasManualProcessingProducts(orderId, connection);
+    const orderStatus = (orderItemTypes.includes(6) || hasManualProcessing) ? 1 : 7;
+
     await connection.execute(
       "UPDATE res_orders SET payment_status = ?, amount_paid = ?, order_status = ?, transaction_id = ? WHERE order_id = ?",
-      [2, parseFloat(orderDetails.amount_due), 7, transactionId, orderId]
+      [2, parseFloat(orderDetails.amount_due), orderStatus, transactionId, orderId]
     );
 
     // Process order (also use transaction)

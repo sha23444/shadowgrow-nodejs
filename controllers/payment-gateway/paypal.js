@@ -321,14 +321,9 @@ async function handleWebhook(req, res) {
 
             const dbTransactionId = transactionResult.insertId;
            
-            // updated order status
-            
-            await pool.execute(
-              "UPDATE res_orders SET transaction_id = ? , payment_status = ?, amount_paid = ?, order_status = ? WHERE order_id = ?",
-              [dbTransactionId, 2, parseFloat(amount), 7, order.order_id]
-            );
-            
-            // Process order
+            // Determine order status: Physical products (item_type 6) should remain Pending (1) for admin approval
+            // Digital products can be Completed (7) immediately, EXCEPT if they require manual processing
+            const { hasManualProcessingProducts } = require('./helper');
             let itemTypes;
             try {
               itemTypes = JSON.parse(order.item_types);
@@ -342,7 +337,16 @@ async function handleWebhook(req, res) {
               });
               return res.status(200).json({ status: "success" });
             }
-
+            const hasManualProcessing = await hasManualProcessingProducts(order.order_id, pool);
+            const orderStatus = (itemTypes.includes(6) || hasManualProcessing) ? 1 : 7;
+            
+            // updated order status
+            await pool.execute(
+              "UPDATE res_orders SET transaction_id = ? , payment_status = ?, amount_paid = ?, order_status = ? WHERE order_id = ?",
+              [dbTransactionId, 2, parseFloat(amount), orderStatus, order.order_id]
+            );
+            
+            // Process order
             if (itemTypes.includes(5)) {
               try {
                 await addCreditsBalance(order.order_id);
@@ -441,13 +445,8 @@ async function handleWebhook(req, res) {
 
               const dbTransactionId = transactionResult.insertId;
 
-              // Update order status with transaction ID
-              await pool.execute(
-                "UPDATE res_orders SET transaction_id = ?, payment_status = ?, amount_paid = ?, order_status = ? WHERE order_id = ?",
-                [dbTransactionId, 2, parseFloat(payment.amount.value), 7, order.order_id]
-              );
-
-              // Process order
+              // Determine order status: Physical products (item_type 6) should remain Pending (1) for admin approval
+              // Digital products can be Completed (7) immediately
               let itemTypes;
               try {
                 itemTypes = JSON.parse(order.item_types);
@@ -459,9 +458,19 @@ async function handleWebhook(req, res) {
                   errorDetails: err,
                   endpoint: '/paypal/webhook'
                 });
-                return res.status(200).json({ status: "success" });
+                itemTypes = [];
               }
+              const { hasManualProcessingProducts } = require('./helper');
+              const hasManualProcessing = await hasManualProcessingProducts(order.order_id, pool);
+              const orderStatus = (itemTypes.includes(6) || hasManualProcessing) ? 1 : 7;
 
+              // Update order status with transaction ID
+              await pool.execute(
+                "UPDATE res_orders SET transaction_id = ?, payment_status = ?, amount_paid = ?, order_status = ? WHERE order_id = ?",
+                [dbTransactionId, 2, parseFloat(payment.amount.value), orderStatus, order.order_id]
+              );
+
+              // Process order
               if (itemTypes.includes(5)) {
                 try {
                   await addCreditsBalance(order.order_id);
@@ -616,10 +625,22 @@ async function updateOrder(req, res) {
 
     const transactionId = transactionResult.insertId;
 
+    // Determine order status: Physical products (item_type 6) should remain Pending (1) for admin approval
+    // Digital products can be Completed (7) immediately, EXCEPT if they require manual processing
+    const { hasManualProcessingProducts } = require('./helper');
+    let itemTypes = [];
+    try {
+      itemTypes = order.item_types ? JSON.parse(order.item_types) : [];
+    } catch (err) {
+      itemTypes = [];
+    }
+    const hasManualProcessing = await hasManualProcessingProducts(order.order_id, pool);
+    const orderStatus = (itemTypes.includes(6) || hasManualProcessing) ? 1 : 7;
+
     // Update order status to paid
     await pool.execute(
-      "UPDATE res_orders SET payment_status = 2, order_status = 7, transaction_id = ?, amount_paid = ? WHERE order_id = ?",
-      [transactionId, order.total_amount, order.order_id]
+      "UPDATE res_orders SET payment_status = 2, order_status = ?, transaction_id = ?, amount_paid = ? WHERE order_id = ?",
+      [orderStatus, transactionId, order.total_amount, order.order_id]
     );
 
     // Activate order using the existing activateOrder function

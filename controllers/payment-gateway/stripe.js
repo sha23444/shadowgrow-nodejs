@@ -371,10 +371,30 @@ async function webhookHandler(req, res) {
           const orderId = session.metadata?.order_id;
           
           if (orderId) {
+            // Fetch order to check item_types
+            const [orderRows] = await connection.execute(
+              "SELECT item_types FROM res_orders WHERE order_id = ?",
+              [orderId]
+            );
+            
+            // Determine order status: Physical products (item_type 6) should remain Pending (1) for admin approval
+            // Digital products can be Completed (7) immediately, EXCEPT if they require manual processing
+            const { hasManualProcessingProducts } = require('./helper');
+            let itemTypes = [];
+            if (orderRows.length > 0 && orderRows[0].item_types) {
+              try {
+                itemTypes = JSON.parse(orderRows[0].item_types);
+              } catch (err) {
+                itemTypes = [];
+              }
+            }
+            const hasManualProcessing = await hasManualProcessingProducts(orderId, connection);
+            const orderStatus = (itemTypes.includes(6) || hasManualProcessing) ? 1 : 7;
+            
             // Update order status to paid
             await connection.execute(
-              "UPDATE res_orders SET payment_status = 2, order_status = 7 WHERE order_id = ?",
-              [orderId]
+              "UPDATE res_orders SET payment_status = 2, order_status = ? WHERE order_id = ?",
+              [orderStatus, orderId]
             );
 
             // Insert transaction record

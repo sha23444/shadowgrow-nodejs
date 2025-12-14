@@ -436,12 +436,24 @@ async function getPaidFilesList(req, res) {
         remainingTime = `${diffHours}h ${diffMinutes}m`;
       }
 
+      // Construct download URL using token if available, otherwise use API endpoint
+      let downloadUrl = null;
+      if (file.can_download) {
+        if (file.hash_token && file.download_status === 'active') {
+          // Use token-based download URL
+          downloadUrl = `/download?token=${file.hash_token}`;
+        } else {
+          // Fallback to API endpoint if no token or token expired
+          downloadUrl = `/api/users/account/downloads/download-file/${file.file_id}`;
+        }
+      }
+
       return {
         ...file,
         password: decryptedPassword,
         formattedSize: formatFileSize(file.size),
         remainingTime,
-        downloadUrl: file.can_download ? `/api/users/account/downloads/download-file/${file.file_id}` : null,
+        downloadUrl: downloadUrl,
         passwordUrl: `/api/users/account/downloads/file-password/${file.file_id}`,
         // Add order information with currency
         orderInfo: {

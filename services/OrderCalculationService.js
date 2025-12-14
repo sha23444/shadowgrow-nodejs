@@ -198,7 +198,7 @@ class OrderCalculationService {
   }
 
   /**
-   * 📊 Fetch cart items from database
+   * 📊 Fetch cart items from database and recompute prices from source
    */
   static async getCartItems(userId, connection = null) {
     const db = connection || pool;
@@ -209,18 +209,105 @@ class OrderCalculationService {
     );
 
     // Don't throw error for empty cart, just return empty array
-    // Validate cart items have required fields (only if items exist)
-    if (cartItems && cartItems.length > 0) {
-      const invalidItems = cartItems.filter(item => 
-        !item.sale_price || !item.item_type || !item.item_name
-      );
+    if (!cartItems || cartItems.length === 0) {
+      return [];
+    }
 
-      if (invalidItems.length > 0) {
-        throw new Error(`Some cart items are missing required information (price, type, or name). Invalid items: ${invalidItems.length}`);
+    // 🔄 Recompute prices from source to ensure accuracy
+    const recomputedItems = await this.recomputeCartPrices(cartItems, db);
+
+    // Validate cart items have required fields (only if items exist)
+    const invalidItems = recomputedItems.filter(item => {
+      const salePrice = Number(item.sale_price || 0);
+      const originalPrice = Number(item.original_price || 0);
+      const hasPrice = salePrice > 0 || originalPrice > 0;
+      return !hasPrice || !item.item_type || !item.item_name;
+    });
+
+    if (invalidItems.length > 0) {
+      throw new Error(`Some cart items are missing required information (price, type, or name). Invalid items: ${invalidItems.length}`);
+    }
+
+    return recomputedItems;
+  }
+
+  /**
+   * 🔄 Recompute prices for cart items from source (products table)
+   * This ensures prices are always current and accurate
+   */
+  static async recomputeCartPrices(cartItems, connection = null) {
+    if (!Array.isArray(cartItems) || cartItems.length === 0) {
+      return cartItems;
+    }
+
+    const db = connection || pool;
+
+    // Group items by item_type for efficient querying
+    const physicalProductIds = [];
+    const digitalProductIds = [];
+    
+    for (const item of cartItems) {
+      const itemType = Number(item.item_type);
+      if (itemType === 6) {
+        physicalProductIds.push(item.item_id);
+      } else if (itemType === 3) {
+        digitalProductIds.push(item.item_id);
       }
     }
 
-    return cartItems || [];
+    // Fetch current prices from products table
+    const priceMap = new Map();
+    
+    if (physicalProductIds.length > 0 || digitalProductIds.length > 0) {
+      const allProductIds = [...new Set([...physicalProductIds, ...digitalProductIds])];
+      if (allProductIds.length > 0) {
+        const placeholders = allProductIds.map(() => '?').join(',');
+        const [products] = await db.execute(
+          `SELECT product_id, sale_price, original_price FROM res_products WHERE product_id IN (${placeholders})`,
+          allProductIds
+        );
+        
+        for (const product of products) {
+          priceMap.set(Number(product.product_id), {
+            sale_price: Number(product.sale_price || 0),
+            original_price: Number(product.original_price || product.sale_price || 0),
+          });
+        }
+      }
+    }
+
+    // Update cart items with current prices
+    const updatedItems = cartItems.map((item) => {
+      const itemType = Number(item.item_type);
+      let currentPrice = priceMap.get(item.item_id);
+      
+      // For products (physical or digital), use current price from database
+      if ((itemType === 6 || itemType === 3) && currentPrice) {
+        return {
+          ...item,
+          sale_price: currentPrice.sale_price,
+          original_price: currentPrice.original_price,
+        };
+      }
+      
+      // For other item types (files, packages, courses, services), keep existing price
+      // But ensure we have valid prices - use original_price if sale_price is 0 or null
+      const salePrice = Number(item.sale_price || 0);
+      const originalPrice = Number(item.original_price || 0);
+      
+      // If sale_price is 0 or null, use original_price as fallback
+      if (salePrice === 0 && originalPrice > 0) {
+        return {
+          ...item,
+          sale_price: originalPrice,
+          original_price: originalPrice,
+        };
+      }
+      
+      return item;
+    });
+
+    return updatedItems;
   }
 
   /**

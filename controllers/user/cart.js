@@ -286,17 +286,23 @@ async function syncCart(req, res) {
       });
     }
 
-    // if isUpdate is true, remove items from the cart
-    if (!isUpdate) {
-      await pool.execute("DELETE FROM res_cart WHERE user_id = ?", [id]);
-    }
-
-    const userCartItems = isUpdate ? existingCartItems : [];
-
     // Prepare update and insert lists
     const itemsToUpdate = [];
     const itemsToInsert = [];
-    const existingItemIds = new Set(userCartItems.map((item) => item.item_id));
+    // Create a Set using both item_id and item_type as the key
+    // Use existingCartItems for checking what exists (before any deletions)
+    const existingItemKeys = new Set(
+      existingCartItems.map((item) => `${item.item_id}-${item.item_type}`)
+    );
+
+    // if isUpdate is false, we'll delete all items and insert new ones
+    // if isUpdate is true, we'll merge/update existing items
+    if (!isUpdate) {
+      await pool.execute("DELETE FROM res_cart WHERE user_id = ?", [id]);
+      // After deletion, all items should be inserted (not updated)
+      // So we clear the existingItemKeys to force all items to go to itemsToInsert
+      existingItemKeys.clear();
+    }
 
     for (const item of cartItems) {
       if (!item.item_id || !item.item_name || item.sale_price === undefined) {
@@ -331,7 +337,7 @@ async function syncCart(req, res) {
       if (itemType === 6 || itemType === 3) {
         try {
           const [products] = await pool.execute(
-            "SELECT sale_price, original_price, stock_quantity, track_inventory FROM res_products WHERE product_id = ?",
+            "SELECT sale_price, original_price, stock_quantity, track_inventory, requires_activation_key, digital_file_url FROM res_products WHERE product_id = ?",
             [item.item_id]
           );
           
@@ -343,8 +349,24 @@ async function syncCart(req, res) {
             
             // Validate inventory for items that need stock tracking
             if (shouldReserveStock(itemType)) {
-              const stockQuantity = product.stock_quantity !== null ? Number(product.stock_quantity) : null;
-              const trackInventory = product.track_inventory === 1 || product.track_inventory === true;
+              let stockQuantity = product.stock_quantity !== null ? Number(product.stock_quantity) : null;
+              let trackInventory = product.track_inventory === 1 || product.track_inventory === true;
+
+              // For digital products with activation keys, check available keys count
+              if (itemType === 3 && (product.requires_activation_key === 1 || product.requires_activation_key === true)) {
+                const [keyCount] = await pool.execute(
+                  "SELECT COUNT(*) as available_keys FROM res_product_activation_keys WHERE product_id = ? AND status = 'available'",
+                  [item.item_id]
+                );
+                stockQuantity = keyCount[0]?.available_keys || 0;
+                trackInventory = true; // Always track for activation key products
+              }
+              // For digital products with file URLs, unlimited stock (skip check)
+              else if (itemType === 3 && product.digital_file_url && product.digital_file_url.trim() !== '') {
+                // Unlimited stock for file-based digital products - skip inventory check
+                trackInventory = false;
+                stockQuantity = 999999; // Set high value for display
+              }
 
               // Validate stock only if:
               // 1. Physical products (always)
@@ -372,12 +394,23 @@ async function syncCart(req, res) {
         }
       }
 
-      if (existingItemIds.has(item.item_id)) {
+      // Check if item exists using both item_id and item_type
+      const itemKey = `${item.item_id}-${item.item_type}`;
+      if (existingItemKeys.has(itemKey)) {
         itemsToUpdate.push(normalizedItem);
       } else {
         itemsToInsert.push(normalizedItem);
       }
     }
+
+    // Debug logging
+    console.log('Cart sync debug:', {
+      userId: id,
+      isUpdate,
+      itemsToInsert: itemsToInsert.length,
+      itemsToUpdate: itemsToUpdate.length,
+      existingItemKeys: Array.from(existingItemKeys),
+    });
 
     // Update existing cart items
     if (itemsToUpdate.length > 0) {
@@ -391,7 +424,8 @@ async function syncCart(req, res) {
               stock = ?, 
               meta = ? 
           WHERE user_id = ? 
-          AND item_id = ?`,
+          AND item_id = ? 
+          AND item_type = ?`,
           [
             item.quantity ?? 1,
             item.sale_price,
@@ -401,6 +435,7 @@ async function syncCart(req, res) {
             item.meta || null,
             item.user_id,
             item.item_id,
+            item.item_type,
           ]
         );
       }
@@ -410,7 +445,7 @@ async function syncCart(req, res) {
     if (itemsToInsert.length > 0) {
       const insertCartQuery = `
         INSERT INTO res_cart 
-        (user_id, item_id, item_type, item_name, sale_price, original_price, quantity, stock, media, meta, min_cart_qty, max_cart_qty) 
+        (user_id, item_id, item_type, item_name, sale_price, original_price, quantity, stock, media, meta, min_cart_qty, max_cart_qty, is_active) 
         VALUES ?
       `;
 
@@ -423,17 +458,23 @@ async function syncCart(req, res) {
         item.original_price,
         item.quantity ?? 1,
         item.stock !== null ? item.stock : null,
-        item.media || "",
-        item.meta || null,
+        typeof item.media === 'string' ? item.media : (item.media ? JSON.stringify(item.media) : ""),
+        typeof item.meta === 'string' ? item.meta : (item.meta ? JSON.stringify(item.meta) : null),
         item.min_cart_qty ?? 1,
         item.max_cart_qty ?? 1,
+        1, // is_active = 1
       ]);
 
-      await pool.query(insertCartQuery, [cartValues]);
+      try {
+        await pool.query(insertCartQuery, [cartValues]);
+      } catch (insertError) {
+        console.error('Error inserting cart items:', insertError);
+        throw insertError;
+      }
     }
 
     const [freshCartItems] = await pool.execute(
-      "SELECT * FROM res_cart WHERE user_id = ?",
+      "SELECT * FROM res_cart WHERE user_id = ? AND is_active = 1",
       [id]
     );
     

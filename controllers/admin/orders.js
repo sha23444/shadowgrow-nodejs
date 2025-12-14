@@ -226,7 +226,7 @@ async function getAllOrderList(req, res) {
             `
               SELECT 
                 up.package_id,
-                up.plan_title,
+                up.package_title,
                 up.meta
               FROM res_upackages up
               WHERE up.order_id = ?
@@ -236,7 +236,8 @@ async function getAllOrderList(req, res) {
           if (packages.length) order.packages.push(...packages);
         }
 
-        if (item_types.includes(3)) {
+        // Fetch products if applicable (both digital type 3 and physical type 6)
+        if (item_types.includes(3) || item_types.includes(6)) {
           const [products] = await pool.execute(
             `
               SELECT 
@@ -312,6 +313,7 @@ async function getOrderDetails(req, res) {
 
   try {
     // Fetch order details with user details
+    // Note: Shiprocket columns are optional - they may not exist in all databases
     const [[order]] = await pool.execute(
       `
         SELECT 
@@ -328,20 +330,6 @@ async function getOrderDetails(req, res) {
           o.item_types,
           o.billing_address,
           o.shipping_address,
-          o.shiprocket_order_id,
-          o.shiprocket_shipment_id,
-          o.shiprocket_awb,
-          o.shiprocket_courier_id,
-          o.shiprocket_courier_name,
-          o.shiprocket_tracking_url,
-          o.shiprocket_status,
-          o.shiprocket_label_url,
-          o.shiprocket_manifest_url,
-          o.shiprocket_pickup_scheduled_date,
-          o.shiprocket_pickup_token,
-          o.shiprocket_pickup_attempts,
-          o.shiprocket_created_at,
-          o.shiprocket_updated_at,
           u.user_id,
           u.username,
           u.email,
@@ -397,6 +385,9 @@ async function getOrderDetails(req, res) {
       console.error('Error parsing shipping_address:', e);
     }
 
+    // Get base currency (store default currency)
+    const baseCurrency = await getBaseCurrencyInfo();
+
     // Initialize response structure
     const orderDetails = {
       order_id: order.order_id,
@@ -408,23 +399,26 @@ async function getOrderDetails(req, res) {
       order_status: order.order_status,
       currency: order.currency,
       exchange_rate: order.exchange_rate,
+      base_currency: baseCurrency, // Store default currency
       notes: order.notes,
       item_types: itemTypes,
       billing_address: billingAddress,
       shipping_address: shippingAddress,
-      shiprocket_order_id: order.shiprocket_order_id,
-      shiprocket_shipment_id: order.shiprocket_shipment_id,
-      shiprocket_awb: order.shiprocket_awb,
-      shiprocket_courier_id: order.shiprocket_courier_id,
-      shiprocket_courier_name: order.shiprocket_courier_name,
-      shiprocket_tracking_url: order.shiprocket_tracking_url,
-      shiprocket_status: order.shiprocket_status,
-      shiprocket_label_url: order.shiprocket_label_url,
-      shiprocket_manifest_url: order.shiprocket_manifest_url,
-      shiprocket_pickup_scheduled_date: order.shiprocket_pickup_scheduled_date,
-      shiprocket_pickup_token: order.shiprocket_pickup_token,
-      shiprocket_created_at: order.shiprocket_created_at,
-      shiprocket_updated_at: order.shiprocket_updated_at,
+      // Shiprocket fields - set to null if columns don't exist in database
+      shiprocket_order_id: order.shiprocket_order_id || null,
+      shiprocket_shipment_id: order.shiprocket_shipment_id || null,
+      shiprocket_awb: order.shiprocket_awb || null,
+      shiprocket_courier_id: order.shiprocket_courier_id || null,
+      shiprocket_courier_name: order.shiprocket_courier_name || null,
+      shiprocket_tracking_url: order.shiprocket_tracking_url || null,
+      shiprocket_status: order.shiprocket_status || null,
+      shiprocket_label_url: order.shiprocket_label_url || null,
+      shiprocket_manifest_url: order.shiprocket_manifest_url || null,
+      shiprocket_pickup_scheduled_date: order.shiprocket_pickup_scheduled_date || null,
+      shiprocket_pickup_token: order.shiprocket_pickup_token || null,
+      shiprocket_pickup_attempts: order.shiprocket_pickup_attempts || null,
+      shiprocket_created_at: order.shiprocket_created_at || null,
+      shiprocket_updated_at: order.shiprocket_updated_at || null,
       user_id: order.user_id,
       username: order.username,
       email: order.email,
@@ -478,8 +472,8 @@ async function getOrderDetails(req, res) {
       }
     }
 
-    // Fetch products if applicable
-    if (itemTypes.includes(3)) {
+    // Fetch products if applicable (both digital type 3 and physical type 6)
+    if (itemTypes.includes(3) || itemTypes.includes(6)) {
       const [products] = await pool.execute(
         `
           SELECT 
@@ -489,6 +483,14 @@ async function getOrderDetails(req, res) {
             rp.product_name,
             rp.sale_price,
             rp.slug,
+            rp.is_digital_download,
+            rp.requires_activation_key,
+            rp.requires_manual_processing,
+            rp.digital_file_url,
+            rp.digital_delivery_time,
+            rp.delivery_instructions,
+            rp.download_limit,
+            rp.download_expiry_days,
             m.file_name AS image
           FROM res_uproducts AS up
           INNER JOIN res_products AS rp ON up.product_id = rp.product_id
@@ -497,6 +499,33 @@ async function getOrderDetails(req, res) {
         `,
         [order_id]
       );
+
+      // Fetch activation keys for each product that requires them
+      for (const product of products) {
+        if (product.requires_activation_key === 1 || product.requires_activation_key === true) {
+          const [activationKeys] = await pool.execute(
+            `
+              SELECT 
+                activation_key,
+                key_type,
+                status,
+                used_at
+              FROM res_product_activation_keys
+              WHERE product_id = ? AND order_id = ? AND user_id = ?
+              ORDER BY used_at DESC
+            `,
+            [product.product_id, order_id, order.user_id]
+          );
+          
+          // Add activation keys to product object
+          product.activation_keys = activationKeys.map(key => ({
+            key: key.activation_key,
+            type: key.key_type,
+            status: key.status,
+            used_at: key.used_at
+          }));
+        }
+      }
 
       if (products.length) {
         orderDetails.products.push(...products);
@@ -594,6 +623,8 @@ async function confirmOrder(req, res) {
     notes = "Confirmed Order By Admin",
     amount_paid,
     payment_date,
+    payment_method,
+    transaction_id = "",
   } = req.body;
 
   let connection;
@@ -615,20 +646,43 @@ async function confirmOrder(req, res) {
       });
     }
 
-    // Update payment info in res_orders
+    // Check if order has manual processing products (for informational purposes)
+    const { hasManualProcessingProducts } = require('../payment-gateway/helper');
+    const hasManualProcessing = await hasManualProcessingProducts(order_id, connection);
+
+    // When admin confirms order, always set status to Completed (7)
+    // Manual processing products can still be handled via "Process Activation Service" feature
+    const orderStatus = 7; // Completed
+
+    // Only use payment_method from request body if it's explicitly provided and is a valid number
+    // Otherwise, preserve the existing payment_method from the order (never change it unless explicitly provided)
+    let finalPaymentMethod;
+    if (payment_method !== undefined && payment_method !== null && payment_method !== '' && !isNaN(parseInt(payment_method))) {
+      // Payment method was explicitly provided in the request
+      finalPaymentMethod = parseInt(payment_method);
+    } else {
+      // No payment method provided or invalid - preserve existing payment method from order
+      finalPaymentMethod = orderDetails.payment_method;
+    }
+
+    // Get currency from order or fallback to base currency
+    const orderCurrency = orderDetails.currency || 'USD';
+    const orderExchangeRate = orderDetails.exchange_rate || 1;
+
+    // Update payment info in res_orders - preserve payment_method unless explicitly provided
     await connection.execute(
       `UPDATE res_orders 
-       SET order_status = ?, notes = ?, amount_paid = ?, payment_status = ?, payment_method = 3 
+       SET order_status = ?, notes = ?, amount_paid = ?, payment_status = ?, payment_method = ? 
        WHERE order_id = ? AND user_id = ?`,
-      [7, notes, amount_paid, 2, order_id, user_id]
+      [orderStatus, notes, amount_paid, 2, finalPaymentMethod, order_id, user_id]
     );
 
-    // Insert transaction into res_transactions
+    // Insert transaction into res_transactions with all required fields
     await connection.execute(
       `INSERT INTO res_transactions 
-       (user_id, order_id, amount, payment_date) 
-       VALUES (?, ?, ?, ?)`,
-      [user_id, order_id, amount_paid, payment_date]
+       (user_id, order_id, currency, amount, exchange_rate, payment_status, payment_method, gateway_txn_id, payment_date, created_at, updated_at) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+      [user_id, order_id, orderCurrency, amount_paid, orderExchangeRate, 2, finalPaymentMethod, transaction_id || "", payment_date]
     );
 
     // Activate packages associated with the specific order_id
@@ -669,9 +723,20 @@ async function confirmOrder(req, res) {
     }
 
     await connection.commit();
+    
+    // Return success message - order is now completed
+    const message = hasManualProcessing 
+      ? "Order confirmed and marked as completed. Note: Some products require manual activation - use 'Process Activation Service' if needed."
+      : "Order confirmed and activated successfully. Status changed to Completed.";
+    
     return res.status(200).json({
       status: "success",
-      message: "Order confirmed and activated successfully.",
+      message: message,
+      data: {
+        order_id: order_id,
+        order_status: orderStatus,
+        requires_manual_processing: hasManualProcessing
+      }
     });
   } catch (error) {
     if (connection) await connection.rollback();
@@ -1478,6 +1543,217 @@ async function getDigitalFilesSalesStats(_req, res) {
   }
 }
 
+/**
+ * Update order status
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
+async function updateOrderStatus(req, res) {
+  const { order_id } = req.params; // Get order_id from URL params
+  const { order_status, notes } = req.body; // Get order_status and notes from request body
+
+  if (!order_id || !order_status) {
+    return res.status(400).json({
+      status: "error",
+      message: "Order ID and Order Status are required.",
+    });
+  }
+
+  // Validate order status (1-12)
+  if (![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].includes(parseInt(order_status))) {
+    return res.status(400).json({
+      status: "error",
+      message: "Invalid order status.",
+    });
+  }
+
+  try {
+    // Check if order exists
+    const [[order]] = await pool.execute(
+      "SELECT * FROM res_orders WHERE order_id = ?",
+      [order_id]
+    );
+
+    if (!order) {
+      return res.status(404).json({
+        status: "error",
+        message: "Order not found.",
+      });
+    }
+
+    // Update order status
+    await pool.execute(
+      `UPDATE res_orders 
+       SET order_status = ?, notes = COALESCE(?, notes), updated_at = NOW()
+       WHERE order_id = ?`,
+      [order_status, notes || null, order_id]
+    );
+
+    return res.status(200).json({
+      status: "success",
+      message: "Order status updated successfully.",
+      data: {
+        order_id,
+        order_status: parseInt(order_status),
+      },
+    });
+  } catch (error) {
+    console.error("Error updating order status:", error.message);
+    return res.status(500).json({
+      status: "error",
+      message: "Failed to update order status. Please try again later.",
+    });
+  }
+}
+
+/**
+ * Manually process activation service order
+ * Marks order as completed and sends message to user with receipt number
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
+async function manuallyProcessActivationService(req, res) {
+  const { order_id } = req.params;
+  const { receipt_number, message } = req.body;
+
+  if (!order_id) {
+    return res.status(400).json({
+      status: "error",
+      message: "Order ID is required.",
+    });
+  }
+
+  if (!receipt_number) {
+    return res.status(400).json({
+      status: "error",
+      message: "Receipt number is required.",
+    });
+  }
+
+  try {
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      // Check if order exists and get details
+      const [[order]] = await connection.execute(
+        `SELECT o.*, u.email, u.username, u.first_name, u.last_name 
+         FROM res_orders o
+         INNER JOIN res_users u ON o.user_id = u.user_id
+         WHERE o.order_id = ?`,
+        [order_id]
+      );
+
+      if (!order) {
+        await connection.rollback();
+        return res.status(404).json({
+          status: "error",
+          message: "Order not found.",
+        });
+      }
+
+      // Check if order has products that require manual processing
+      const [products] = await connection.execute(
+        `SELECT rp.product_id, rp.product_name, rp.requires_manual_processing
+         FROM res_uproducts up
+         INNER JOIN res_products rp ON up.product_id = rp.product_id
+         WHERE up.order_id = ? AND (rp.requires_manual_processing = 1 OR rp.requires_manual_processing IS NOT NULL)`,
+        [order_id]
+      );
+
+      if (products.length === 0) {
+        await connection.rollback();
+        return res.status(400).json({
+          status: "error",
+          message: "This order does not contain products that require manual processing.",
+        });
+      }
+
+      // Build completion message
+      const completionMessage = message || `Your order #${order_id} has been processed successfully. Receipt Number: ${receipt_number}`;
+      
+      // Update order status to completed (7) and add notes with receipt number
+      const notesData = {
+        receipt_number,
+        manual_processed_at: new Date().toISOString(),
+        message: completionMessage,
+        processed_by: req.user?.id || null,
+      };
+      
+      const existingNotes = order.notes ? JSON.parse(order.notes) : {};
+      const updatedNotes = {
+        ...existingNotes,
+        manual_processing: notesData,
+      };
+
+      await connection.execute(
+        `UPDATE res_orders 
+         SET order_status = 7, 
+             notes = ?,
+             updated_at = NOW()
+         WHERE order_id = ?`,
+        [JSON.stringify(updatedNotes), order_id]
+      );
+
+      // Send notification to user
+      const NotificationService = require('../../services/notificationService');
+      await NotificationService.createNotification(
+        'order_processed',
+        'Order Processed',
+        completionMessage,
+        {
+          order_id: parseInt(order_id),
+          receipt_number,
+          user_id: order.user_id,
+        },
+        false // Not admin-only, user can see it
+      );
+
+      // Send email to user (optional - if email service is configured)
+      try {
+        const { sendEmail } = require('../../email-service/email-service');
+        const emailSubject = `Order #${order_id} Processed - Receipt: ${receipt_number}`;
+        const emailBody = `
+          <h2>Order Processed Successfully</h2>
+          <p>Dear ${order.first_name || order.username},</p>
+          <p>Your order #${order_id} has been processed successfully.</p>
+          <p><strong>Receipt Number:</strong> ${receipt_number}</p>
+          ${message ? `<p>${message}</p>` : ''}
+          <p>Thank you for your purchase!</p>
+        `;
+        
+        await sendEmail(order.email, emailSubject, emailBody);
+      } catch (emailError) {
+        console.warn('Email sending failed for manual processing:', emailError.message);
+        // Don't fail the request if email fails
+      }
+
+      await connection.commit();
+
+      return res.status(200).json({
+        status: "success",
+        message: "Order processed successfully and user notified.",
+        data: {
+          order_id: parseInt(order_id),
+          receipt_number,
+          order_status: 7,
+        },
+      });
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  } catch (error) {
+    console.error("Error manually processing order:", error.message);
+    return res.status(500).json({
+      status: "error",
+      message: "Failed to process order. Please try again later.",
+    });
+  }
+}
+
 module.exports = {
   getAllOrderList,
   getOrderDetails,
@@ -1489,4 +1765,6 @@ module.exports = {
   getCompletedPaidOrdersStats,
   getDigitalFilesSalesStats,
   cancelOrder,
+  updateOrderStatus,
+  manuallyProcessActivationService,
 };

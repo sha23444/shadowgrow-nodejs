@@ -6,6 +6,9 @@ const { extractFolderNamesAndSlugs } = require('../utils/folderUtils');
 const { ErrorLogger } = require("../../logger");
 const NotificationService = require("../../services/notificationService");
 const { onFileAdded, onFileUpdated, onFileDeleted, onFolderChanged, onFolderDeleted } = require("../../config/smart-cache");
+const ExcelJS = require('exceljs');
+const path = require('path');
+const fs = require('fs');
 
 // Extensions you want to remove
 const archiveExtensions = [
@@ -2312,6 +2315,987 @@ async function bulkCutCopyPaste(req, res) {
   }
 }
 
+/**
+ * Helper function to get or create folder by path recursively
+ * IMPORTANT: This function NEVER deletes existing folders. It only:
+ * - Checks if folders exist and reuses them
+ * - Creates new folders only if they don't exist
+ * 
+ * @param {Object} connection - Database connection
+ * @param {string} folderPath - Path like "folder1/folder2/folder3"
+ * @param {number} parentId - Parent folder ID (default: 0 for root)
+ * @param {number} userId - Admin user ID (required for folder creation)
+ * @returns {Promise<number>} - Folder ID
+ */
+async function getOrCreateFolderByPath(connection, folderPath, parentId = 0, userId = null) {
+  if (!folderPath || folderPath.trim() === '') {
+    return parentId;
+  }
+
+  // Normalize path: remove leading/trailing slashes and split
+  const normalizedPath = folderPath.trim().replace(/^\/+|\/+$/g, '');
+  if (!normalizedPath) {
+    return parentId;
+  }
+
+  // Validate path doesn't contain invalid characters
+  if (/[<>:"|?*\x00-\x1f]/.test(normalizedPath)) {
+    throw new Error('Folder path contains invalid characters');
+  }
+
+  // Split path into folder names and filter out empty strings
+  const folderNames = normalizedPath.split('/').map(name => name.trim()).filter(name => name !== '');
+  
+  if (folderNames.length === 0) {
+    return parentId;
+  }
+
+  // Validate folder name length (database constraint)
+  for (const name of folderNames) {
+    if (name.length > 255) {
+      throw new Error(`Folder name "${name}" exceeds maximum length of 255 characters`);
+    }
+    if (name.length === 0) {
+      throw new Error('Folder path contains empty folder names');
+    }
+  }
+
+  let currentParentId = parentId;
+
+  // Process each folder in the path
+  for (const folderName of folderNames) {
+    const trimmedName = folderName.trim();
+    if (!trimmedName) {
+      throw new Error('Empty folder name in path');
+    }
+
+    try {
+      // IMPORTANT: Check if folder exists - NEVER delete existing folders
+      // Only create new folders if they don't exist
+      const [existing] = await connection.execute(
+        `SELECT folder_id FROM res_folders WHERE title = ? AND parent_id = ?`,
+        [trimmedName, currentParentId]
+      );
+
+      if (existing.length > 0) {
+        // Folder exists - reuse it (NO DELETION, NO UPDATE)
+        currentParentId = existing[0].folder_id;
+      } else {
+        // Folder doesn't exist - create new one (INSERT ONLY)
+        // Create new folder
+        const folderSlug = slugify(trimmedName, {
+          lower: true,
+          replacement: '-',
+          remove: /[*+~.()'"!:@]/g,
+        });
+
+        // Ensure unique slug (with retry limit to prevent infinite loops)
+        let uniqueSlug = folderSlug;
+        let counter = 1;
+        const maxRetries = 1000; // Safety limit
+        while (counter < maxRetries) {
+          const [slugRows] = await connection.execute(
+            `SELECT folder_id FROM res_folders WHERE slug = ? AND parent_id = ?`,
+            [uniqueSlug, currentParentId]
+          );
+          if (slugRows.length === 0) break;
+          uniqueSlug = `${folderSlug}-${counter++}`;
+        }
+
+        if (counter >= maxRetries) {
+          throw new Error(`Unable to generate unique slug for folder: ${trimmedName}`);
+        }
+
+        // INSERT ONLY - Create new folder (never UPDATE or DELETE existing folders)
+        // Validate userId is provided (required for database constraint)
+        if (!userId) {
+          throw new Error('User ID is required to create folders');
+        }
+
+        const [insertResult] = await connection.execute(
+          `INSERT INTO res_folders (title, parent_id, description, thumbnail, is_active, is_new, slug, c_user_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            trimmedName,
+            currentParentId,
+            null,
+            null,
+            1,
+            1,
+            uniqueSlug,
+            userId // Admin user ID from authenticated request
+          ]
+        );
+
+        if (!insertResult || !insertResult.insertId) {
+          throw new Error(`Failed to create folder: ${trimmedName}`);
+        }
+
+        currentParentId = insertResult.insertId;
+      }
+    } catch (folderErr) {
+      // Re-throw with more context
+      throw new Error(`Error processing folder "${trimmedName}": ${folderErr.message}`);
+    }
+  }
+
+  return currentParentId;
+}
+
+/**
+ * Helper function to safely delete temporary file
+ * @param {string} filePath - Path to file to delete
+ * @returns {Promise<boolean>} - True if deleted successfully, false otherwise
+ */
+async function safeDeleteFile(filePath) {
+  if (!filePath) return false;
+  
+  try {
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+      return true;
+    }
+    return false;
+  } catch (err) {
+    console.error(`Error deleting temporary file ${filePath}:`, err);
+    await ErrorLogger.logError(err, `Failed to delete temporary file: ${filePath}`, "warning");
+    return false;
+  }
+}
+
+/**
+ * Upload files from Excel file
+ * Excel should have columns: FullPath, Title, URL, URL_Type, Description, Size, Price, etc.
+ * 
+ * IMPORTANT SAFETY GUARANTEES:
+ * - NEVER deletes existing files or folders
+ * - ONLY inserts new records (INSERT statements only)
+ * - Skips files that already exist (by title + folder_id)
+ * - Reuses existing folders (never modifies or deletes them)
+ * - Only creates new folders if they don't exist
+ */
+async function uploadFilesFromExcel(req, res) {
+  const connection = await pool.getConnection();
+  let uploadedFilePath = null;
+  
+  try {
+    // Log request details for debugging
+    console.log('[Excel Upload] Processing request:', {
+      hasFile: !!req.file,
+      hasUploadError: !!req.uploadError,
+      fileInfo: req.file ? {
+        originalname: req.file.originalname,
+        filename: req.file.filename,
+        size: req.file.size,
+        mimetype: req.file.mimetype
+      } : null
+    });
+
+    // Check for multer upload errors
+    if (req.uploadError) {
+      console.error('[Excel Upload] Upload error detected:', req.uploadError);
+      return res.status(400).json({
+        status: 'error',
+        message: req.uploadError.message || 'File upload error',
+      });
+    }
+
+    if (!req.file) {
+      console.error('[Excel Upload] No file in request');
+      return res.status(400).json({
+        status: 'error',
+        message: 'No Excel file uploaded. Please upload an Excel file.',
+        hint: 'Make sure the form field name is "excelFile"'
+      });
+    }
+
+    uploadedFilePath = req.file.path;
+
+    // Validate file exists
+    if (!fs.existsSync(uploadedFilePath)) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Uploaded file not found. Please try uploading again.',
+      });
+    }
+
+    // Check file extension
+    const fileExt = path.extname(req.file.originalname).toLowerCase();
+    if (!['.xlsx', '.xls'].includes(fileExt)) {
+      await safeDeleteFile(uploadedFilePath);
+      return res.status(400).json({
+        status: 'error',
+        message: 'Invalid file type. Please upload an Excel file (.xlsx or .xls).',
+      });
+    }
+
+    // Validate file size (additional check)
+    const stats = fs.statSync(uploadedFilePath);
+    const fileSizeInMB = stats.size / (1024 * 1024);
+    if (fileSizeInMB > 10) {
+      await safeDeleteFile(uploadedFilePath);
+      return res.status(400).json({
+        status: 'error',
+        message: 'File size exceeds 10MB limit.',
+      });
+    }
+
+    // Read Excel file with error handling
+    let workbook;
+    try {
+      workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.readFile(uploadedFilePath);
+      
+      // Log file info for debugging
+      console.log(`[Excel Upload] File loaded: ${req.file.originalname}, Worksheets: ${workbook.worksheets.length}`);
+    } catch (excelErr) {
+      await safeDeleteFile(uploadedFilePath);
+      await ErrorLogger.logError(excelErr, "Error reading Excel file", "error");
+      console.error('[Excel Upload] Error reading file:', excelErr);
+      return res.status(400).json({
+        status: 'error',
+        message: 'Failed to read Excel file. Please ensure the file is not corrupted and is a valid Excel file (.xlsx or .xls format).',
+        details: process.env.NODE_ENV === 'development' ? excelErr.message : undefined
+      });
+    }
+
+    // Get first worksheet
+    const worksheet = workbook.worksheets[0];
+    if (!worksheet) {
+      await safeDeleteFile(uploadedFilePath);
+      return res.status(400).json({
+        status: 'error',
+        message: 'Excel file is empty or has no worksheets.',
+      });
+    }
+
+    console.log(`[Excel Upload] Worksheet: ${worksheet.name}, Rows: ${worksheet.rowCount}, Columns: ${worksheet.columnCount}`);
+
+    // Validate worksheet has data
+    if (worksheet.rowCount < 2) {
+      await safeDeleteFile(uploadedFilePath);
+      return res.status(400).json({
+        status: 'error',
+        message: 'Excel file must contain at least a header row and one data row.',
+        details: {
+          rows_found: worksheet.rowCount,
+          suggestion: 'Add at least one data row below the header row.'
+        }
+      });
+    }
+
+    // Get headers from first row (case-insensitive)
+    const headers = {};
+    const headerRow = worksheet.getRow(1);
+    let headerCount = 0;
+    
+    headerRow.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+      let headerValue = null;
+      
+      // Handle different cell value types
+      if (cell.value !== null && cell.value !== undefined) {
+        if (typeof cell.value === 'object' && cell.value.text !== undefined) {
+          // Rich text cell
+          headerValue = cell.value.text.toString().trim();
+        } else if (cell.value instanceof Date) {
+          // Date cell - convert to string
+          headerValue = cell.value.toISOString().trim();
+        } else {
+          // Regular value
+          headerValue = cell.value.toString().trim();
+        }
+      }
+      
+      if (headerValue && headerValue.length > 0) {
+        headers[colNumber] = {
+          original: headerValue,
+          lower: headerValue.toLowerCase()
+        };
+        headerCount++;
+      }
+    });
+
+    if (headerCount === 0) {
+      await safeDeleteFile(uploadedFilePath);
+      return res.status(400).json({
+        status: 'error',
+        message: 'Excel file has no valid headers in the first row.',
+      });
+    }
+
+    // Convert to JSON (skip header row)
+    const rows = [];
+    worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+      if (rowNumber === 1) return; // Skip header row
+      
+      const rowData = {};
+      let hasAnyData = false;
+      
+      row.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+        const headerInfo = headers[colNumber];
+        if (headerInfo) {
+          let cellValue = null;
+          
+          // Handle different cell value types
+          if (cell.value !== null && cell.value !== undefined) {
+            if (typeof cell.value === 'object' && cell.value.text !== undefined) {
+              // Rich text cell
+              cellValue = cell.value.text.toString().trim();
+            } else if (cell.value instanceof Date) {
+              // Date cell - convert to ISO string
+              cellValue = cell.value.toISOString();
+            } else if (typeof cell.value === 'number') {
+              // Number cell - keep as number but also store as string
+              cellValue = cell.value;
+            } else {
+              // String or other types
+              cellValue = cell.value.toString().trim();
+            }
+            
+            // Only store non-empty values
+            if (cellValue !== null && cellValue !== undefined && cellValue !== '') {
+              rowData[headerInfo.original] = cellValue;
+              // Also add lowercase version for easier access
+              rowData[headerInfo.lower] = cellValue;
+              hasAnyData = true;
+            }
+          }
+        }
+      });
+      
+      // Check for FullPath (case-insensitive) - try multiple variations
+      const fullPath = rowData.FullPath || 
+                      rowData.fullpath || 
+                      rowData['Full Path'] || 
+                      rowData['full path'] ||
+                      rowData['FULLPATH'] ||
+                      rowData['FullPath'] ||
+                      rowData['Fullpath'];
+      
+      // Only add row if it has data and FullPath
+      if (hasAnyData && fullPath && fullPath.toString().trim() !== '') {
+        rows.push(rowData);
+      }
+    });
+
+    if (rows.length === 0) {
+      await safeDeleteFile(uploadedFilePath);
+      const availableHeaders = Object.values(headers).map(h => h.original).join(', ');
+      return res.status(400).json({
+        status: 'error',
+        message: 'No valid data found in Excel file. Ensure FullPath column exists and contains data.',
+        details: {
+          headers_found: availableHeaders,
+          total_rows_in_sheet: worksheet.rowCount,
+          suggestion: 'Make sure your Excel file has a header row with "FullPath" column and at least one data row with FullPath values.'
+        }
+      });
+    }
+
+    // Validate we have required headers (check for FullPath in various formats)
+    const hasFullPath = Object.keys(headers).some(col => {
+      const header = headers[col].original.toLowerCase().replace(/\s+/g, '');
+      return header === 'fullpath' || 
+             header === 'full_path' || 
+             header.includes('fullpath') || 
+             header.includes('full path');
+    });
+
+    if (!hasFullPath) {
+      await safeDeleteFile(uploadedFilePath);
+      const availableHeaders = Object.values(headers).map(h => h.original).join(', ');
+      return res.status(400).json({
+        status: 'error',
+        message: `Excel file must contain a "FullPath" column. Found columns: ${availableHeaders || 'none'}`,
+      });
+    }
+
+    // Validate we have Title or Name column
+    const hasTitleOrName = Object.keys(headers).some(col => {
+      const header = headers[col].original.toLowerCase().replace(/\s+/g, '');
+      return header === 'title' || 
+             header === 'name' || 
+             header === 'filetitle' ||
+             header === 'filename';
+    });
+
+    if (!hasTitleOrName) {
+      await safeDeleteFile(uploadedFilePath);
+      const availableHeaders = Object.values(headers).map(h => h.original).join(', ');
+      return res.status(400).json({
+        status: 'error',
+        message: `Excel file must contain either a "Title" or "Name" column. Found columns: ${availableHeaders || 'none'}`,
+      });
+    }
+
+    // Validate we have URL or DirectDownloadURL column
+    const hasUrl = Object.keys(headers).some(col => {
+      const header = headers[col].original.toLowerCase().replace(/\s+/g, '');
+      return header === 'url' || 
+             header === 'directdownloadurl' ||
+             header === 'direct_download_url' ||
+             header === 'link';
+    });
+
+    if (!hasUrl) {
+      await safeDeleteFile(uploadedFilePath);
+      const availableHeaders = Object.values(headers).map(h => h.original).join(', ');
+      return res.status(400).json({
+        status: 'error',
+        message: `Excel file must contain either a "URL" or "DirectDownloadURL" column. Found columns: ${availableHeaders || 'none'}`,
+      });
+    }
+
+    // Begin transaction - all operations are INSERT-only (safe, no data loss on rollback)
+    await connection.beginTransaction();
+
+    const results = {
+      created: [],
+      errors: [],
+      skipped: []
+    };
+
+    // ====================================================================
+    // SAFETY GUARANTEES - THIS FUNCTION NEVER DELETES OR UPDATES ANYTHING
+    // ====================================================================
+    // This function ONLY performs INSERT operations:
+    // - Never calls updateFolder, deleteFolder, updateFile, or deleteFile
+    // - Never executes UPDATE or DELETE SQL statements
+    // - Only creates new folders and files that don't exist
+    // - Skips existing files/folders without modifying them
+    // - Reuses existing folders (never modifies or deletes them)
+    // - All database operations are INSERT statements only
+    // ====================================================================
+
+    // Process each row
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const rowNumber = i + 2; // +2 because we skipped header and arrays are 0-indexed
+
+      try {
+        // Extract required fields (case-insensitive) - handle null/undefined values
+        const getFieldValue = (variations) => {
+          for (const variation of variations) {
+            const value = row[variation];
+            if (value !== null && value !== undefined && value !== '') {
+              return value.toString().trim();
+            }
+          }
+          return '';
+        };
+
+        const fullPath = getFieldValue(['FullPath', 'fullpath', 'Full Path', 'full path', 'FULLPATH', 'Fullpath', 'Full_Path', 'full_path']) || '';
+        // Accept both "Title" and "Name" as valid column names for file title
+        const title = getFieldValue(['Title', 'title', 'TITLE', 'File Title', 'file title', 'Name', 'name', 'NAME', 'File Name', 'file name']) || '';
+        // Accept "URL" or "DirectDownloadURL" as valid column names for file URL
+        const url = getFieldValue(['DirectDownloadURL', 'directdownloadurl', 'Direct Download URL', 'direct download url', 'Direct_Download_URL', 'direct_download_url', 'URL', 'url', 'Url', 'Link', 'link']) || '';
+        const urlType = getFieldValue(['URL_Type', 'url_type', 'URL Type', 'url type', 'Url_Type', 'Url Type']) || 'external';
+        
+        // Validate required fields
+        if (!fullPath) {
+          results.errors.push({
+            row: rowNumber,
+            reason: 'FullPath is required',
+            data: row
+          });
+          continue;
+        }
+
+        // If no title/name provided, create folder structure only (skip file creation)
+        if (!title) {
+          // Still create the folder structure if it doesn't exist
+          const adminUserId = req.user?.id || null;
+          if (adminUserId) {
+            try {
+              await getOrCreateFolderByPath(connection, fullPath, 0, adminUserId);
+              // Add to skipped with informative message
+              results.skipped.push({
+                row: rowNumber,
+                fullPath,
+                reason: 'No Title/Name provided - folder structure created/verified, file creation skipped',
+                folder_only: true
+              });
+            } catch (folderErr) {
+              results.errors.push({
+                row: rowNumber,
+                reason: `Failed to create folder structure: ${folderErr.message}`,
+                data: row
+              });
+            }
+          } else {
+            results.errors.push({
+              row: rowNumber,
+              reason: 'Title/Name is required for file creation. Admin user ID not found.',
+              data: row
+            });
+          }
+          continue;
+        }
+
+        if (!url) {
+          results.errors.push({
+            row: rowNumber,
+            reason: 'URL/DirectDownloadURL is required. Please provide either "URL" or "DirectDownloadURL" column.',
+            data: row
+          });
+          continue;
+        }
+
+        // Validate URL format
+        if (!validator.isURL(url, { require_protocol: true })) {
+          results.errors.push({
+            row: rowNumber,
+            reason: `Invalid URL format: ${url}. URL must include protocol (http:// or https://)`,
+            data: row
+          });
+          continue;
+        }
+
+        // Validate folder path format (no empty segments, no invalid characters)
+        if (fullPath.includes('//') || fullPath.startsWith('/') || fullPath.endsWith('/')) {
+          results.errors.push({
+            row: rowNumber,
+            reason: 'Invalid FullPath format. Path should not start/end with slash or contain double slashes',
+            data: row
+          });
+          continue;
+        }
+
+        // Validate title length
+        if (title.length > 255) {
+          results.errors.push({
+            row: rowNumber,
+            reason: 'Title exceeds maximum length of 255 characters',
+            data: row
+          });
+          continue;
+        }
+
+        // Get or create folder structure with error handling
+        // Get admin user ID from request (required for folder creation)
+        const adminUserId = req.user?.id || null;
+        if (!adminUserId) {
+          results.errors.push({
+            row: rowNumber,
+            reason: 'Admin user ID not found in request. Please ensure you are authenticated.',
+            data: row
+          });
+          continue;
+        }
+
+        let folderId;
+        try {
+          folderId = await getOrCreateFolderByPath(connection, fullPath, 0, adminUserId);
+          if (!folderId || folderId === 0) {
+            throw new Error('Failed to create or retrieve folder');
+          }
+        } catch (folderErr) {
+          results.errors.push({
+            row: rowNumber,
+            reason: `Failed to create folder structure: ${folderErr.message}`,
+            data: row
+          });
+          continue;
+        }
+
+        // IMPORTANT: Check if file already exists - NEVER delete or update existing files
+        // Only insert new files if they don't exist
+        const [existing] = await connection.execute(
+          `SELECT file_id FROM res_files WHERE title = ? AND folder_id = ?`,
+          [title, folderId]
+        );
+
+        if (existing.length > 0) {
+          // File already exists - skip it (NO DELETION, NO UPDATE)
+          results.skipped.push({
+            row: rowNumber,
+            title,
+            fullPath,
+            reason: 'File with same title already exists in this folder - skipped to preserve existing file',
+            file_id: existing[0].file_id
+          });
+          continue;
+        }
+
+        // Extract optional fields (case-insensitive)
+        const description = (row.Description || row.description)?.toString().trim() || null;
+        
+        // Extract size - accept "Size", "Size (bytes)", or variations
+        const sizeValue = row['Size (bytes)'] || 
+                         row['size (bytes)'] || 
+                         row['Size(bytes)'] ||
+                         row['size(bytes)'] ||
+                         row['Size (Bytes)'] ||
+                         row['SIZE (BYTES)'] ||
+                         row.Size || 
+                         row.size;
+        
+        // Parse and validate size with better error handling
+        let size = 1024; // Default size
+        
+        if (sizeValue !== null && sizeValue !== undefined && sizeValue !== '') {
+          // Convert to string first to handle numbers and strings
+          const sizeStr = String(sizeValue).trim().replace(/,/g, ''); // Remove commas
+          
+          // Try to parse as integer
+          const parsedSize = parseInt(sizeStr, 10);
+          
+          // Check if parsing was successful
+          if (isNaN(parsedSize)) {
+            // If not a valid number, try to extract number from string (e.g., "1024 bytes" -> 1024)
+            const numberMatch = sizeStr.match(/(\d+)/);
+            if (numberMatch) {
+              size = parseInt(numberMatch[1], 10);
+            } else {
+              // Invalid size format - use default but log warning
+              console.warn(`[Row ${rowNumber}] Invalid size format: "${sizeValue}", using default 1024 bytes`);
+              size = 1024;
+            }
+          } else {
+            size = parsedSize;
+          }
+        }
+        
+        // Validate and fix size - be lenient, use defaults for invalid values
+        if (size < 0) {
+          // Negative size - use default and log warning
+          console.warn(`[Row ${rowNumber}] Negative size value: ${sizeValue}, using default 1024 bytes`);
+          size = 1024;
+        }
+        
+        if (size > 2147483647) {
+          // Size too large - cap at maximum and log warning
+          console.warn(`[Row ${rowNumber}] Size exceeds maximum (${sizeValue}), capping at 2GB`);
+          size = 2147483647; // Maximum allowed size
+        }
+        
+        // Ensure size is at least 1 byte (0 is invalid)
+        if (size === 0) {
+          size = 1024; // Use default for zero values
+        }
+        
+        // Final validation - if somehow size is still invalid, use default
+        if (!Number.isInteger(size) || size < 1) {
+          console.warn(`[Row ${rowNumber}] Invalid size after parsing: ${size}, using default 1024 bytes`);
+          size = 1024;
+        }
+        
+        // Extract price
+        const price = parseFloat(row.Price || row.price || 0) || 0;
+        if (price < 0 || price > 999999.99) {
+          results.errors.push({
+            row: rowNumber,
+            reason: 'Price must be between 0 and 999999.99',
+            data: row
+          });
+          continue;
+        }
+        
+        const isActive = (row.Is_Active || row.is_active || row['Is Active'] || row['is active']) !== undefined 
+          ? ((row.Is_Active || row.is_active || row['Is Active'] || row['is active']) === 1 || 
+             (row.Is_Active || row.is_active || row['Is Active'] || row['is active']) === '1' || 
+             (row.Is_Active || row.is_active || row['Is Active'] || row['is active']) === true) 
+          : 1;
+        const isNew = (row.Is_New || row.is_new || row['Is New'] || row['is new']) !== undefined
+          ? ((row.Is_New || row.is_new || row['Is New'] || row['is new']) === 1 || 
+             (row.Is_New || row.is_new || row['Is New'] || row['is new']) === '1' || 
+             (row.Is_New || row.is_new || row['Is New'] || row['is new']) === true)
+          : 1;
+        const isFeatured = (row.Is_Featured || row.is_featured || row['Is Featured'] || row['is featured']) !== undefined
+          ? ((row.Is_Featured || row.is_featured || row['Is Featured'] || row['is featured']) === 1 || 
+             (row.Is_Featured || row.is_featured || row['Is Featured'] || row['is featured']) === '1' || 
+             (row.Is_Featured || row.is_featured || row['Is Featured'] || row['is featured']) === true)
+          : 0;
+        const thumbnail = (row.Thumbnail || row.thumbnail)?.toString().trim() || null;
+        const image = (row.Image || row.image)?.toString().trim() || null;
+        const slug = (row.Slug || row.slug)?.toString().trim() || null;
+        const metaTitle = (row.Meta_Title || row.meta_title || row['Meta Title'] || row['meta title'])?.toString().trim() || null;
+        const metaDescription = (row.Meta_Description || row.meta_description || row['Meta Description'] || row['meta description'])?.toString().trim() || null;
+        const metaKeywords = (row.Meta_Keywords || row.meta_keywords || row['Meta Keywords'] || row['meta keywords'])?.toString().trim() || null;
+        const password = (row.Password || row.password)?.toString().trim() || null;
+        const isPassword = (row.Is_Password || row.is_password || row['Is Password'] || row['is password']) !== undefined
+          ? ((row.Is_Password || row.is_password || row['Is Password'] || row['is password']) === 1 || 
+             (row.Is_Password || row.is_password || row['Is Password'] || row['is password']) === '1' || 
+             (row.Is_Password || row.is_password || row['Is Password'] || row['is password']) === true)
+          : false;
+
+        // Validate featured and paid conflict
+        if (isFeatured && price > 0) {
+          results.errors.push({
+            row: rowNumber,
+            reason: 'Cannot have both featured and paid options. Featured files must be free.',
+            data: row
+          });
+          continue;
+        }
+
+        // Validate password if password protection is enabled
+        if (isPassword && (!password || password.trim() === '')) {
+          results.errors.push({
+            row: rowNumber,
+            reason: 'Password is required when Is_Password is enabled',
+            data: row
+          });
+          continue;
+        }
+
+        // Generate unique slug
+        let baseSlug = (slug && slug.trim() !== '') ? slug.trim() : slugify(title, { 
+          lower: true, 
+          replacement: '-', 
+          remove: /[*+~.()_'"!:@]/g 
+        });
+        let counter = 1;
+        let finalSlug = baseSlug;
+
+        while (true) {
+          const [check] = await connection.execute(
+            `SELECT file_id FROM res_files WHERE slug = ? AND folder_id = ?`, 
+            [finalSlug, folderId]
+          );
+          if (check.length === 0) break;
+          finalSlug = `${baseSlug}-${counter++}`;
+        }
+
+        const priceDecimal = parseFloat(price ?? 0).toFixed(2);
+        const encryptedPassword = isPassword ? encrypt(password) : null;
+
+        // INSERT ONLY - Create new file record (never UPDATE or DELETE existing files)
+        let insertResult;
+        try {
+          [insertResult] = await connection.execute(
+            `INSERT INTO res_files 
+            (folder_id, title, slug, description, body, thumbnail, image, size, price, url, url_type, is_active, is_new, is_featured, password, meta_title, meta_description, meta_keywords)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              folderId,
+              title,
+              finalSlug,
+              description,
+              null, // body
+              thumbnail,
+              image,
+              size,
+              priceDecimal,
+              url,
+              urlType,
+              isActive ? 1 : 0,
+              isNew ? 1 : 0,
+              isFeatured ? 1 : 0,
+              encryptedPassword,
+              metaTitle,
+              metaDescription,
+              metaKeywords
+            ]
+          );
+        } catch (dbErr) {
+          // Check for specific database errors
+          if (dbErr.code === 'ER_DUP_ENTRY') {
+            // Duplicate entry - file already exists (this shouldn't happen due to our check, but handle it safely)
+            results.skipped.push({
+              row: rowNumber,
+              title,
+              fullPath,
+              reason: 'Duplicate entry detected - file already exists (preserved)',
+              data: row
+            });
+          } else {
+            results.errors.push({
+              row: rowNumber,
+              reason: `Database error: ${dbErr.message}`,
+              data: row
+            });
+          }
+          continue;
+        }
+
+        const newFileId = insertResult.insertId;
+
+        // Handle tags if provided (case-insensitive) with error handling
+        const tagsValue = row.Tags || row.tags || row['Tags'] || row['tags'];
+        if (tagsValue) {
+          try {
+            const tags = Array.isArray(tagsValue) 
+              ? tagsValue 
+              : tagsValue.toString().split(',').map(t => t.trim()).filter(t => t);
+            
+            for (const tag of tags) {
+              if (!tag || tag.length === 0) continue;
+              
+              try {
+                let [existingTag] = await connection.execute(`SELECT id FROM tags WHERE tag = ?`, [tag]);
+                let tagId;
+                
+                if (existingTag.length > 0) {
+                  tagId = existingTag[0].id;
+                } else {
+                  const [insertTagResult] = await connection.execute(`INSERT INTO tags (tag) VALUES (?)`, [tag]);
+                  tagId = insertTagResult.insertId;
+                }
+
+                const [existingMapping] = await connection.execute(
+                  `SELECT tag_id FROM tag_map WHERE tag_id = ? AND ref_id = ? AND ref_type = 'file'`,
+                  [tagId, newFileId]
+                );
+
+                if (existingMapping.length === 0) {
+                  await connection.execute(
+                    `INSERT INTO tag_map (tag_id, ref_id, ref_type) VALUES (?, ?, ?)`,
+                    [tagId, newFileId, 'file']
+                  );
+                }
+              } catch (tagErr) {
+                // Log tag error but don't fail the entire file creation
+                console.error(`Error processing tag "${tag}" for file ${newFileId}:`, tagErr);
+              }
+            }
+          } catch (tagsErr) {
+            // Log but don't fail - tags are optional
+            console.error(`Error processing tags for file ${newFileId}:`, tagsErr);
+          }
+        }
+
+        results.created.push({
+          row: rowNumber,
+          file_id: newFileId,
+          title,
+          fullPath,
+          folder_id: folderId
+        });
+
+      } catch (err) {
+        // Log detailed error for debugging
+        console.error(`Error processing row ${rowNumber}:`, err);
+        await ErrorLogger.logError(
+          err, 
+          `Error processing Excel row ${rowNumber}`, 
+          "error"
+        );
+        
+        results.errors.push({
+          row: rowNumber,
+          reason: err.message || 'Unknown error occurred while processing this row',
+          error_type: err.name || 'UnknownError',
+          data: row
+        });
+      }
+    }
+
+    // Commit transaction only if we have at least some successful operations
+    // IMPORTANT: All operations are INSERT-only, so rollback is safe (no data loss)
+    try {
+      if (results.created.length > 0 || results.skipped.length > 0) {
+        // Commit only INSERT operations (no UPDATE or DELETE operations)
+        await connection.commit();
+      } else {
+        // If no files were created or skipped, rollback (safe - only INSERTs were attempted)
+        await connection.rollback();
+      }
+    } catch (commitErr) {
+      // Rollback is safe - we only perform INSERT operations, never DELETE or UPDATE
+      await connection.rollback();
+      throw new Error(`Transaction commit failed: ${commitErr.message}`);
+    }
+
+    // Clean up uploaded file (always attempt cleanup)
+    await safeDeleteFile(uploadedFilePath);
+
+    // Log summary for debugging
+    console.log(`[Excel Upload] Processing complete:`, {
+      total_rows: rows.length,
+      created: results.created.length,
+      skipped: results.skipped.length,
+      errors: results.errors.length
+    });
+
+    // Determine response status based on results
+    const hasErrors = results.errors.length > 0;
+    const hasSuccess = results.created.length > 0 || results.skipped.length > 0;
+    
+    let statusCode = 200;
+    let status = 'success';
+    let message = `Processed ${rows.length} rows from Excel file`;
+
+    if (!hasSuccess && hasErrors) {
+      // All rows failed
+      statusCode = 400;
+      status = 'error';
+      message = 'No files were created. Please check the errors and try again.';
+    } else if (hasSuccess && hasErrors) {
+      // Partial success
+      status = 'partial_success';
+      message = `Processed ${rows.length} rows. Some files were created, but some errors occurred.`;
+    }
+
+    // ====================================================================
+    // SAFETY VERIFICATION: No files or folders were deleted or updated
+    // - All operations were INSERT-only
+    // - Existing files were skipped (preserved)
+    // - Existing folders were reused (preserved)
+    // - Only new records were created
+    // ====================================================================
+
+    res.status(statusCode).json({
+      status,
+      message,
+      results: {
+        total: rows.length,
+        created: results.created.length,
+        skipped: results.skipped.length,
+        errors: results.errors.length,
+        details: {
+          created: results.created,
+          skipped: results.skipped,
+          errors: results.errors.slice(0, 50) // Limit error details to first 50 to avoid huge responses
+        },
+        ...(results.errors.length > 50 && {
+          error_note: `Showing first 50 errors. Total errors: ${results.errors.length}`
+        })
+      }
+    });
+
+  } catch (err) {
+    // Ensure transaction is rolled back
+    try {
+      await connection.rollback();
+    } catch (rollbackErr) {
+      console.error('Error during rollback:', rollbackErr);
+    }
+    
+    // Clean up uploaded file on error (always attempt)
+    if (uploadedFilePath) {
+      await safeDeleteFile(uploadedFilePath);
+    }
+
+    // Log error with full context
+    await ErrorLogger.logError(err, "Error uploading files from Excel", "error");
+    
+    // Provide user-friendly error message
+    const errorMessage = process.env.NODE_ENV === 'development' 
+      ? err.message 
+      : 'An error occurred while processing the Excel file. Please check the file format and try again.';
+
+    res.status(500).json({
+      status: 'error',
+      message: 'Internal Server Error',
+      error: errorMessage,
+      ...(process.env.NODE_ENV === 'development' && {
+        stack: err.stack,
+        details: err.message
+      })
+    });
+  } finally {
+    // Always release connection
+    if (connection) {
+      try {
+        connection.release();
+      } catch (releaseErr) {
+        console.error('Error releasing database connection:', releaseErr);
+      }
+    }
+  }
+}
+
 
 module.exports = {
   getAllFoldersFiles,
@@ -2328,5 +3312,6 @@ module.exports = {
   resetAndMigrateTags,
   bulkCreateFolders,
   bulkDeleteFolderAndFiles,
-  bulkCutCopyPaste
+  bulkCutCopyPaste,
+  uploadFilesFromExcel
 };

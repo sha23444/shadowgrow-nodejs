@@ -529,20 +529,7 @@ async function fetchPayment(req, res) {
 
         const transactionId = transactionResult.insertId;
 
-        // Update order status
-        const paidAmount = cashfreeOrder.order_amount;
-        await connection.execute(
-            "UPDATE res_orders SET payment_status = ?, amount_paid = ?, order_status = ?, transaction_id = ? WHERE order_id = ?",
-            [
-                CASHFREE_CONFIG.PAYMENT_STATUS.PAID, 
-                paidAmount, 
-                CASHFREE_CONFIG.ORDER_STATUS_DB.COMPLETED, 
-                transactionId, 
-                order_id
-            ]
-        );
-
-        // Parse item types
+        // Parse item types first to determine order status
         let itemTypes;
         try {
             itemTypes = JSON.parse(order.item_types);
@@ -553,6 +540,25 @@ async function fetchPayment(req, res) {
                 message: "Invalid item types in order.",
             });
         }
+
+        // Determine order status: Physical products (item_type 6) should remain Pending (1) for admin approval
+        // Digital products can be Completed (7) immediately, EXCEPT if they require manual processing
+        const { hasManualProcessingProducts } = require('./helper');
+        const hasManualProcessing = await hasManualProcessingProducts(order_id, connection);
+        const orderStatus = (itemTypes.includes(6) || hasManualProcessing) ? 1 : CASHFREE_CONFIG.ORDER_STATUS_DB.COMPLETED;
+
+        // Update order status
+        const paidAmount = cashfreeOrder.order_amount;
+        await connection.execute(
+            "UPDATE res_orders SET payment_status = ?, amount_paid = ?, order_status = ?, transaction_id = ? WHERE order_id = ?",
+            [
+                CASHFREE_CONFIG.PAYMENT_STATUS.PAID, 
+                paidAmount, 
+                orderStatus, 
+                transactionId, 
+                order_id
+            ]
+        );
 
         // Process order or add credits
         if (itemTypes.includes(5)) {
@@ -752,20 +758,7 @@ async function webhookHandler(req, res) {
 
             const transactionId = transactionResult.insertId;
 
-            // Update order status
-            const paidAmount = amount || order.amount_due;
-            await connection.execute(
-                "UPDATE res_orders SET payment_status = ?, amount_paid = ?, order_status = ?, transaction_id = ? WHERE order_id = ?",
-                [
-                    CASHFREE_CONFIG.PAYMENT_STATUS.PAID, 
-                    paidAmount, 
-                    CASHFREE_CONFIG.ORDER_STATUS_DB.COMPLETED, 
-                    transactionId, 
-                    order.order_id
-                ]
-            );
-
-            // Parse item types
+            // Parse item types first to determine order status
             let itemTypes;
             try {
                 itemTypes = JSON.parse(order.item_types);
@@ -773,6 +766,25 @@ async function webhookHandler(req, res) {
 //                 // console.error('Error parsing item types:', err);
                 itemTypes = [];
             }
+
+            // Determine order status: Physical products (item_type 6) should remain Pending (1) for admin approval
+            // Digital products can be Completed (7) immediately, EXCEPT if they require manual processing
+            const { hasManualProcessingProducts } = require('./helper');
+            const hasManualProcessing = await hasManualProcessingProducts(order.order_id, connection);
+            const orderStatus = (itemTypes.includes(6) || hasManualProcessing) ? 1 : CASHFREE_CONFIG.ORDER_STATUS_DB.COMPLETED;
+
+            // Update order status
+            const paidAmount = amount || order.amount_due;
+            await connection.execute(
+                "UPDATE res_orders SET payment_status = ?, amount_paid = ?, order_status = ?, transaction_id = ? WHERE order_id = ?",
+                [
+                    CASHFREE_CONFIG.PAYMENT_STATUS.PAID, 
+                    paidAmount, 
+                    orderStatus, 
+                    transactionId, 
+                    order.order_id
+                ]
+            );
 
             // Process order based on item types
             if (itemTypes.includes(5)) {

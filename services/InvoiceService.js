@@ -117,6 +117,38 @@ class InvoiceService {
         }
       }
 
+      // Parse item_types if it's a string
+      let itemTypes = orderData.item_types;
+      if (typeof itemTypes === 'string') {
+        try {
+          itemTypes = JSON.parse(itemTypes);
+        } catch (e) {
+          itemTypes = [];
+        }
+      }
+      if (!Array.isArray(itemTypes)) {
+        itemTypes = [];
+      }
+
+      // Parse tax_breakdown and discount_details if they're strings
+      let taxBreakdown = orderData.tax_breakdown;
+      if (typeof taxBreakdown === 'string' && taxBreakdown) {
+        try {
+          taxBreakdown = JSON.parse(taxBreakdown);
+        } catch (e) {
+          taxBreakdown = null;
+        }
+      }
+      
+      let discountDetails = orderData.discount_details;
+      if (typeof discountDetails === 'string' && discountDetails) {
+        try {
+          discountDetails = JSON.parse(discountDetails);
+        } catch (e) {
+          discountDetails = null;
+        }
+      }
+
       // Prepare invoice data
       const invoiceData = {
         order_id: orderData.order_id,
@@ -129,22 +161,22 @@ class InvoiceService {
         subtotal: parseFloat(orderData.subtotal || 0),
         tax_amount: parseFloat(orderData.tax || 0),
         discount_amount: parseFloat(orderData.discount || 0),
-        total_amount: parseFloat(orderData.total_amount || 0),
-        amount_paid: parseFloat(orderData.amount_paid || orderData.total_amount || 0),
+        total_amount: parseFloat(orderData.total_amount || orderData.amount_due || 0),
+        amount_paid: parseFloat(orderData.amount_paid || orderData.total_amount || orderData.amount_due || 0),
         amount_due: orderData.payment_status === 2 ? 0 : parseFloat(orderData.amount_due || orderData.total_amount || 0),
-        currency: orderData.currency || 'USD',
-        exchange_rate: parseFloat(orderData.exchange_rate || 1),
-        payment_method: orderData.payment_method,
-        payment_status: orderData.payment_status,
-        gateway_txn_id: null, // Will be populated from transactions if needed
+        currency: orderData.currency || 'INR',
+        exchange_rate: parseFloat(orderData.exchange_rate || 1) || 1,
+        payment_method: orderData.payment_method || 1,
+        payment_status: orderData.payment_status || 1,
+        gateway_txn_id: orderData.transaction_id || null,
         gateway_response: null,
-        invoice_status: orderData.payment_status === 2 ? 3 : 1, // 3=Paid, 1=Draft
-        item_types: orderData.item_types,
-        tax_breakdown: orderData.tax_breakdown,
-        discount_details: orderData.discount_details,
+        invoice_status: (orderData.payment_status === 2 || orderData.payment_status === '2') ? 3 : 1, // 3=Paid, 1=Draft
+        item_types: JSON.stringify(itemTypes),
+        tax_breakdown: taxBreakdown ? JSON.stringify(taxBreakdown) : null,
+        discount_details: discountDetails ? JSON.stringify(discountDetails) : null,
         billing_address: billingAddress ? (typeof billingAddress === 'object' ? JSON.stringify(billingAddress) : billingAddress) : null,
         shipping_address: shippingAddress ? (typeof shippingAddress === 'object' ? JSON.stringify(shippingAddress) : shippingAddress) : null,
-        notes: orderData.notes,
+        notes: orderData.notes || null,
         terms_conditions: null,
         created_at: orderData.created_at,
         updated_at: new Date()
@@ -192,11 +224,22 @@ class InvoiceService {
         ]
       );
 
-      console.log(`Created invoice ${invoiceNumber} for order ${orderData.order_id}`);
+      console.log(`Created invoice ${invoiceNumber} (ID: ${result.insertId}) for order ${orderData.order_id}`);
       return result.insertId;
 
     } catch (error) {
-      console.error(`Error creating invoice for order ${orderData.order_id}:`, error.message);
+      console.error(`Error creating invoice for order ${orderData.order_id}:`, error);
+      console.error('Error message:', error.message);
+      console.error('Error stack:', error.stack);
+      console.error('Order data keys:', Object.keys(orderData));
+      console.error('Order data sample:', {
+        order_id: orderData.order_id,
+        user_id: orderData.user_id,
+        order_status: orderData.order_status,
+        payment_status: orderData.payment_status,
+        item_types: orderData.item_types,
+        total_amount: orderData.total_amount
+      });
       throw error;
     }
   }

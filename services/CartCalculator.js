@@ -696,7 +696,12 @@ class CartCalculator {
   
   calculateSubtotal(cartItems) {
     return cartItems.reduce((total, item) => {
-      return total + (parseFloat(item.sale_price) * parseInt(item.quantity));
+      // Use sale_price if available and > 0, otherwise fallback to original_price
+      const salePrice = parseFloat(item.sale_price || 0);
+      const originalPrice = parseFloat(item.original_price || 0);
+      const price = salePrice > 0 ? salePrice : (originalPrice > 0 ? originalPrice : 0);
+      const quantity = parseInt(item.quantity || 1);
+      return total + (price * quantity);
     }, 0);
   }
 

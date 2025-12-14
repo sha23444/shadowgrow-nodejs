@@ -63,5 +63,15 @@ router.post(
   authorizeAdmin([perms.edit]),
   OrdersController.cancelOrder
 );
+router.put(
+  "/:order_id/status",
+  authorizeAdmin([perms.edit]),
+  OrdersController.updateOrderStatus
+);
+router.post(
+  "/:order_id/process-activation-service",
+  authorizeAdmin([perms.edit]),
+  OrdersController.manuallyProcessActivationService
+);
 
 module.exports = router;

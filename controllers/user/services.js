@@ -378,9 +378,9 @@ async function getServiceBookingById(req, res) {
       `
         SELECT 
           b.*,
-          /* Normalize status for users: treat paid or completed_date as completed */
+          /* Normalize status for users: only show completed if actually completed */
           CASE
-            WHEN b.booking_status = 'completed' OR b.completed_date IS NOT NULL OR b.payment_status = 'paid'
+            WHEN b.booking_status = 'completed' OR b.completed_date IS NOT NULL
               THEN 'completed'
             ELSE b.booking_status
           END AS booking_status,
@@ -569,7 +569,7 @@ async function markBookingPaymentByOrder(req, res) {
         io.to(`booking:${bookingId}`).emit('booking:update', {
           booking_id: bookingId,
           payment_status: 'paid',
-          booking_status: 'completed',
+          booking_status: 'confirmed', // Keep as 'confirmed' - admin will manually set to 'completed'
           updated_at: new Date().toISOString(),
         });
       }
@@ -607,7 +607,7 @@ async function listMyServiceBookings(req, res) {
           b.currency,
           b.payment_status,
           CASE
-            WHEN b.booking_status = 'completed' OR b.completed_date IS NOT NULL OR b.payment_status = 'paid'
+            WHEN b.booking_status = 'completed' OR b.completed_date IS NOT NULL
               THEN 'completed'
             ELSE b.booking_status
           END AS booking_status,

@@ -9,6 +9,7 @@ const InvoiceService = require("../../services/InvoiceService");
 const { notifyOrderCompleted } = require("../admin/telegram");
 const ServiceCheckoutManager = require("../../services/ServiceCheckoutManager");
 const ShipRocketAutoShip = require("../../services/ShipRocketAutoShip");
+const DigitalProductDeliveryService = require("../../services/DigitalProductDeliveryService");
 
 const processOrder = async (order_id, user_id, is_active = 0, externalConnection = null) => {
   let connection;
@@ -39,7 +40,7 @@ const processOrder = async (order_id, user_id, is_active = 0, externalConnection
     // Separate file and package items
     const files = userCart.filter((item) => item.item_type === 1);
     const packages = userCart.filter((item) => item.item_type === 2);
-    const products = userCart.filter((item) => item.item_type === 3);
+    const products = userCart.filter((item) => item.item_type === 3 || item.item_type === 6); // Include both digital (3) and physical (6) products
     const courses = userCart.filter((item) => item.item_type === 4);
 
     // Packages 
@@ -197,11 +198,43 @@ const processOrder = async (order_id, user_id, is_active = 0, externalConnection
         order_id,
         userCart,
       }).catch(console.error);
-    }
 
-    await connection.execute("DELETE FROM res_cart WHERE user_id = ?", [
-      user_id,
-    ]);
+      // Process digital product delivery (activation keys, emails, etc.)
+      // Only process if order contains digital products (item_type = 3)
+      const hasDigitalProducts = products.some(p => Number(p.item_type) === 3);
+      if (hasDigitalProducts) {
+        try {
+          const deliveryResult = await DigitalProductDeliveryService.processDigitalProductDelivery(
+            order_id,
+            user_id,
+            connection
+          );
+          console.log(`Digital product delivery processed for order ${order_id}:`, {
+            assignedKeys: deliveryResult.assignedKeys.length,
+            emailsSent: deliveryResult.emailsSent,
+            errors: deliveryResult.errors.length,
+          });
+        } catch (deliveryError) {
+          console.error(`Error processing digital product delivery for order ${order_id}:`, deliveryError);
+          // Don't fail the order if delivery processing fails - log and continue
+          await ErrorLogger.logError({
+            errorType: 'digital_delivery',
+            errorLevel: 'error',
+            errorMessage: `Failed to process digital product delivery: ${deliveryError.message}`,
+            errorDetails: deliveryError,
+            userId: user_id,
+            orderId: order_id,
+            endpoint: 'processOrder.digitalDelivery',
+          });
+        }
+      }
+      
+      // 🎯 ONLY CLEAR CART WHEN PAYMENT IS CONFIRMED (is_active = 1)
+      // This prevents cart from being deleted if user cancels payment before completion
+      await connection.execute("DELETE FROM res_cart WHERE user_id = ?", [
+        user_id,
+      ]);
+    }
 
     if (serviceItems.length > 0) {
       await ServiceCheckoutManager.handleOrderCreated({
@@ -263,71 +296,80 @@ const activateOrder = async (order_id, user_id, externalConnection = null) => {
       shouldCommit = true;
     }
 
-    // Update the user packages to set is_active = 1
-    try {
-      await connection.execute(
-        "UPDATE res_upackages SET is_active = 1 WHERE order_id = ? AND user_id = ?",
-        [order_id, user_id]
-      );
-    } catch (error) {
-      // If the is_active column doesn't exist, we'll skip this update
-      if (error.message.includes('Unknown column')) {
-        console.warn('res_upackages table may not have is_active column, skipping update');
-      } else {
-        throw error;
+    // Helper function to check if column exists and update if it does
+    const updateIsActiveIfColumnExists = async (tableName, orderId, userId) => {
+      try {
+        // Check if is_active column exists in the table
+        const [columns] = await connection.execute(
+          `SELECT COLUMN_NAME 
+           FROM INFORMATION_SCHEMA.COLUMNS 
+           WHERE TABLE_SCHEMA = DATABASE() 
+           AND TABLE_NAME = ? 
+           AND COLUMN_NAME = 'is_active'`,
+          [tableName]
+        );
+        
+        // Only update if column exists
+        if (columns.length > 0) {
+          await connection.execute(
+            `UPDATE ${tableName} SET is_active = 1 WHERE order_id = ? AND user_id = ?`,
+            [orderId, userId]
+          );
+        }
+      } catch (error) {
+        // Silently skip if there's an error (table might not exist or other issues)
+        // Don't log warnings as this is expected behavior for optional columns
       }
-    }
+    };
 
-    // Update the user files to set is_active = 1
-    try {
-      await connection.execute(
-        "UPDATE res_ufiles SET is_active = 1 WHERE order_id = ? AND user_id = ?",
-        [order_id, user_id]
-      );
-    } catch (error) {
-      // If the is_active column doesn't exist, we'll skip this update
-      if (error.message.includes('Unknown column')) {
-        console.warn('res_ufiles table may not have is_active column, skipping update');
-      } else {
-        throw error;
-      }
-    }
+    // Update is_active for user packages, files, products, and courses (if columns exist)
+    await updateIsActiveIfColumnExists('res_upackages', order_id, user_id);
+    await updateIsActiveIfColumnExists('res_ufiles', order_id, user_id);
+    await updateIsActiveIfColumnExists('res_uproducts', order_id, user_id);
+    await updateIsActiveIfColumnExists('res_ucourses', order_id, user_id);
 
-    // Update the user products to set is_active = 1 (if applicable)
-    try {
-      await connection.execute(
-        "UPDATE res_uproducts SET is_active = 1 WHERE order_id = ? AND user_id = ?",
-        [order_id, user_id]
-      );
-    } catch (error) {
-      // If the is_active column doesn't exist, we'll skip this update
-      if (error.message.includes('Unknown column')) {
-        console.warn('res_uproducts table may not have is_active column, skipping update');
-      } else {
-        throw error;
-      }
-    }
-
-    // Update the user courses to set is_active = 1
-    try {
-      await connection.execute(
-        "UPDATE res_ucourses SET is_active = 1 WHERE order_id = ? AND user_id = ?",
-        [order_id, user_id]
-      );
-    } catch (error) {
-      // If the is_active column doesn't exist, we'll skip this update
-      if (error.message.includes('Unknown column')) {
-        console.warn('res_ucourses table may not have is_active column, skipping update');
-      } else {
-        throw error;
-      }
-    }
-
-    // Fetch user's cart for email
+    // Fetch user's cart for email (before clearing)
     const [userCart] = await connection.execute(
       "SELECT * FROM res_cart WHERE user_id = ?",
       [user_id]
     );
+
+    // 🎯 PROCESS DIGITAL PRODUCT DELIVERY (activation keys, emails, etc.)
+    // Only process if order contains digital products (item_type = 3)
+    const products = userCart.filter((item) => item.item_type === 3 || item.item_type === 6);
+    const hasDigitalProducts = products.some(p => Number(p.item_type) === 3);
+    if (hasDigitalProducts) {
+      try {
+        const deliveryResult = await DigitalProductDeliveryService.processDigitalProductDelivery(
+          order_id,
+          user_id,
+          connection
+        );
+        console.log(`Digital product delivery processed for order ${order_id}:`, {
+          assignedKeys: deliveryResult.assignedKeys.length,
+          emailsSent: deliveryResult.emailsSent,
+          errors: deliveryResult.errors.length,
+        });
+      } catch (deliveryError) {
+        console.error(`Error processing digital product delivery for order ${order_id}:`, deliveryError);
+        // Don't fail the order if delivery processing fails - log and continue
+        await ErrorLogger.logError({
+          errorType: 'digital_delivery',
+          errorLevel: 'error',
+          errorMessage: `Failed to process digital product delivery: ${deliveryError.message}`,
+          errorDetails: deliveryError,
+          userId: user_id,
+          orderId: order_id,
+          endpoint: 'activateOrder.digitalDelivery',
+        });
+      }
+    }
+
+    // 🎯 CLEAR CART WHEN PAYMENT IS CONFIRMED (order is activated)
+    // This ensures cart is only deleted after successful payment, not when order is created
+    await connection.execute("DELETE FROM res_cart WHERE user_id = ?", [
+      user_id,
+    ]);
 
     try {
       await ServiceCheckoutManager.markPaymentByOrder(order_id, user_id, connection);

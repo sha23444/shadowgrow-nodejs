@@ -722,9 +722,9 @@ async function getServiceBookings(req, res) {
     const [bookings] = await pool.execute(`
       SELECT 
         b.*,
-        /* Derive a consistent booking_status reflecting completion rules */
+        /* Derive a consistent booking_status - only show completed if actually completed */
         CASE
-          WHEN b.booking_status = 'completed' OR b.completed_date IS NOT NULL OR b.payment_status = 'paid'
+          WHEN b.booking_status = 'completed' OR b.completed_date IS NOT NULL
             THEN 'completed'
           ELSE b.booking_status
         END AS booking_status,
@@ -749,7 +749,7 @@ async function getServiceBookings(req, res) {
 
     const [bookingStatsResult] = await pool.execute(`
       SELECT 
-        SUM(CASE WHEN (booking_status = 'completed' OR completed_date IS NOT NULL OR payment_status = 'paid') THEN 1 ELSE 0 END) as completed,
+        SUM(CASE WHEN (booking_status = 'completed' OR completed_date IS NOT NULL) THEN 1 ELSE 0 END) as completed,
         SUM(CASE WHEN booking_status = 'pending' THEN 1 ELSE 0 END) as pending,
         SUM(CASE WHEN booking_status = 'confirmed' THEN 1 ELSE 0 END) as confirmed,
         SUM(CASE WHEN booking_status = 'cancelled' THEN 1 ELSE 0 END) as cancelled,
@@ -791,13 +791,41 @@ async function getServiceBookings(req, res) {
 async function updateServiceBookingStatus(req, res) {
   try {
     const { id } = req.params;
+    const bookingId = parseInt(id, 10);
+    
+    if (isNaN(bookingId)) {
+      return res.status(400).json({ error: "Invalid booking ID" });
+    }
+    
     const { booking_status, payment_status, scheduled_date, completed_date, notes } = req.body;
 
-    // Check if booking exists
+    console.log('=== UPDATE BOOKING STATUS REQUEST ===');
+    console.log('Params:', req.params);
+    console.log('Body:', JSON.stringify(req.body, null, 2));
+    console.log('Parsed values:', {
+      bookingId: bookingId,
+      idParam: id,
+      booking_status,
+      payment_status,
+      scheduled_date,
+      completed_date,
+      notes
+    });
+    console.log('=====================================');
+
+    // Check if booking exists and get current status
     const [existingBooking] = await pool.execute(
-      "SELECT booking_id FROM res_service_bookings WHERE booking_id = ?",
-      [id]
+      "SELECT booking_id, booking_status, completed_date FROM res_service_bookings WHERE booking_id = ?",
+      [bookingId]
     );
+
+    console.log('Existing booking check:', {
+      bookingId: bookingId,
+      idParam: id,
+      found: existingBooking.length > 0,
+      currentStatus: existingBooking[0]?.booking_status,
+      currentCompletedDate: existingBooking[0]?.completed_date
+    });
 
     if (existingBooking.length === 0) {
       return res.status(404).json({ error: "Booking not found" });
@@ -806,43 +834,133 @@ async function updateServiceBookingStatus(req, res) {
     const updateFields = [];
     const updateValues = [];
 
-    if (booking_status !== undefined) {
+    console.log('Checking fields to update...');
+    console.log('booking_status check:', { value: booking_status, type: typeof booking_status, undefined: booking_status === undefined, null: booking_status === null });
+    console.log('completed_date check:', { value: completed_date, type: typeof completed_date, undefined: completed_date === undefined, null: completed_date === null });
+
+    if (booking_status !== undefined && booking_status !== null) {
       updateFields.push('booking_status = ?');
       updateValues.push(booking_status);
+      console.log('✅ Adding booking_status to update:', booking_status);
+    } else {
+      console.log('❌ booking_status is undefined or null, skipping');
     }
 
-    if (payment_status !== undefined) {
+    if (payment_status !== undefined && payment_status !== null) {
       updateFields.push('payment_status = ?');
       updateValues.push(payment_status);
+      console.log('✅ Adding payment_status to update:', payment_status);
     }
 
-    if (scheduled_date !== undefined) {
+    if (scheduled_date !== undefined && scheduled_date !== null) {
       updateFields.push('scheduled_date = ?');
       updateValues.push(scheduled_date);
+      console.log('✅ Adding scheduled_date to update:', scheduled_date);
     }
 
-    if (completed_date !== undefined) {
+    if (completed_date !== undefined && completed_date !== null) {
       updateFields.push('completed_date = ?');
-      updateValues.push(completed_date);
+      // Convert ISO date string to MySQL datetime format if needed
+      let mysqlDate = completed_date;
+      if (typeof completed_date === 'string' && completed_date.includes('T')) {
+        // Convert ISO 8601 to MySQL datetime format: YYYY-MM-DD HH:MM:SS
+        const date = new Date(completed_date);
+        mysqlDate = date.toISOString().slice(0, 19).replace('T', ' ');
+        console.log('Converted date from', completed_date, 'to', mysqlDate);
+      }
+      updateValues.push(mysqlDate);
+      console.log('✅ Adding completed_date to update:', mysqlDate);
+    } else {
+      console.log('❌ completed_date is undefined or null, skipping');
     }
 
-    if (notes !== undefined) {
+    if (notes !== undefined && notes !== null) {
       updateFields.push('notes = ?');
       updateValues.push(notes);
+      console.log('✅ Adding notes to update:', notes);
     }
+
+    console.log('Total fields to update:', updateFields.length);
+    console.log('Update fields array:', updateFields);
+    console.log('Update values array:', updateValues);
 
     if (updateFields.length > 0) {
       updateFields.push('updated_at = NOW()');
-      updateValues.push(id);
+      // Add bookingId at the end for WHERE clause
+      updateValues.push(bookingId);
 
-      await pool.execute(`
-        UPDATE res_service_bookings 
-        SET ${updateFields.join(', ')}
-        WHERE booking_id = ?
-      `, updateValues);
+      const sql = `UPDATE res_service_bookings SET ${updateFields.join(', ')} WHERE booking_id = ?`;
+      
+      console.log('Updating booking status:', {
+        bookingId: bookingId,
+        idParam: id,
+        updateFields: updateFields.join(', '),
+        updateValues: updateValues,
+        sql: sql
+      });
+
+      try {
+        console.log('Executing SQL:', sql);
+        console.log('With values:', updateValues);
+        console.log('Values types:', updateValues.map(v => typeof v));
+        
+        const [updateResult] = await pool.execute(sql, updateValues);
+
+        console.log('Update result:', {
+          affectedRows: updateResult.affectedRows,
+          changedRows: updateResult.changedRows,
+          insertId: updateResult.insertId,
+          warningCount: updateResult.warningCount,
+          serverStatus: updateResult.serverStatus
+        });
+
+        if (updateResult.affectedRows === 0) {
+          console.error('❌ ERROR: No rows were affected by the UPDATE query!');
+          console.error('This means the WHERE clause did not match any rows.');
+          console.error('Check if booking_id =', bookingId, 'exists in the database');
+          
+          // Verify the booking exists
+          const [verifyBooking] = await pool.execute(
+            'SELECT booking_id, booking_status FROM res_service_bookings WHERE booking_id = ?',
+            [bookingId]
+          );
+          console.error('Verification query result:', verifyBooking);
+          
+          return res.status(400).json({ 
+            error: "Update failed - no rows affected",
+            debug: {
+              bookingId,
+              sql,
+              values: updateValues,
+              verification: verifyBooking[0]
+            }
+          });
+        } else if (updateResult.changedRows === 0) {
+          console.warn('⚠️ WARNING: Rows were matched but no data was changed!');
+          console.warn('This might mean the new values are the same as existing values.');
+        } else {
+          console.log('✅ SUCCESS: Update completed successfully!');
+          console.log('Changed rows:', updateResult.changedRows);
+        }
+      } catch (updateError) {
+        console.error('❌ ERROR executing UPDATE query:', updateError);
+        console.error('Error details:', {
+          message: updateError.message,
+          code: updateError.code,
+          sqlState: updateError.sqlState,
+          sqlMessage: updateError.sqlMessage,
+          stack: updateError.stack
+        });
+        return res.status(500).json({ 
+          error: "Database update failed",
+          message: updateError.message
+        });
+      }
+    } else {
+      console.warn('No fields to update - all fields were undefined or null');
     }
 
-    // Get updated booking
+    // Get updated booking - use a fresh query to ensure we get the latest data
     const [updatedBooking] = await pool.execute(`
       SELECT 
         b.*,
@@ -850,7 +968,38 @@ async function updateServiceBookingStatus(req, res) {
       FROM res_service_bookings b
       JOIN res_services s ON b.service_id = s.service_id
       WHERE b.booking_id = ?
-    `, [id]);
+    `, [bookingId]);
+
+    console.log('Updated booking from database (after UPDATE):', updatedBooking[0]);
+    console.log('Expected booking_status: completed, Actual:', updatedBooking[0]?.booking_status);
+    console.log('Expected completed_date:', completed_date, 'Actual:', updatedBooking[0]?.completed_date);
+    
+    // If the update didn't work, try a direct update as a fallback
+    if (updatedBooking[0]?.booking_status !== booking_status && booking_status) {
+      console.warn('⚠️ UPDATE did not work as expected. Attempting direct update...');
+      try {
+        await pool.execute(
+          'UPDATE res_service_bookings SET booking_status = ?, completed_date = ?, updated_at = NOW() WHERE booking_id = ?',
+          [booking_status, completed_date || null, bookingId]
+        );
+        console.log('✅ Direct update completed');
+        
+        // Re-fetch after direct update
+        const [reFetched] = await pool.execute(`
+          SELECT b.*, s.service_name, s.slug
+          FROM res_service_bookings b
+          JOIN res_services s ON b.service_id = s.service_id
+          WHERE b.booking_id = ?
+        `, [bookingId]);
+        return res.status(200).json({
+          status: "success",
+          message: "Booking status updated successfully (via direct update)",
+          response: reFetched[0]
+        });
+      } catch (directUpdateError) {
+        console.error('❌ Direct update also failed:', directUpdateError);
+      }
+    }
 
     // Emit socket event to notify user about status change
     try {
@@ -867,10 +1016,28 @@ async function updateServiceBookingStatus(req, res) {
       // Non-blocking
     }
 
+    // Debug: Include what was sent and what was updated
+    const debugInfo = {
+      requestBody: req.body,
+      parsedBookingStatus: booking_status,
+      parsedCompletedDate: completed_date,
+      updateFieldsCount: updateFields.length,
+      updateFields: updateFields,
+      updateValues: updateValues,
+      sqlQuery: updateFields.length > 0 ? `UPDATE res_service_bookings SET ${updateFields.join(', ')} WHERE booking_id = ?` : 'N/A',
+      databaseResult: updatedBooking[0],
+      updateExecuted: updateFields.length > 0
+    };
+    
+    console.log('=== FINAL RESPONSE DEBUG ===');
+    console.log(JSON.stringify(debugInfo, null, 2));
+    console.log('===========================');
+
     res.status(200).json({
       status: "success",
       message: "Booking status updated successfully",
-      response: updatedBooking[0]
+      response: updatedBooking[0],
+      debug: process.env.NODE_ENV === 'development' ? debugInfo : undefined
     });
   } catch (error) {
     console.error("Error updating booking status:", error);

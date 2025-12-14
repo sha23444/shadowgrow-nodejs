@@ -115,6 +115,10 @@ async function addActivationKeys(req, res) {
       );
     }
 
+    // Update product inventory after adding keys (increases available count)
+    const ProductInventoryService = require('../../services/ProductInventoryService');
+    await ProductInventoryService.updateProductInventory(productId, connection);
+
     await connection.commit();
 
     res.json({
@@ -153,6 +157,18 @@ async function updateActivationKeyStatus(req, res) {
       `INSERT INTO res_activation_key_logs (key_id, action, notes) VALUES (?, ?, ?)`,
       [keyId, status, notes || null]
     );
+
+    // Update product inventory if key status changed (affects available count)
+    if (status === 'available' || status === 'used' || status === 'revoked') {
+      const [keyInfo] = await pool.execute(
+        "SELECT product_id FROM res_product_activation_keys WHERE key_id = ?",
+        [keyId]
+      );
+      if (keyInfo.length > 0) {
+        const ProductInventoryService = require('../../services/ProductInventoryService');
+        await ProductInventoryService.updateProductInventory(keyInfo[0].product_id);
+      }
+    }
 
     res.json({
       status: "success",
@@ -215,6 +231,10 @@ async function assignActivationKey(req, res) {
        VALUES (?, ?, ?, 'used', 'Assigned to order')`,
       [key_id, orderId, user_id]
     );
+
+    // Update product inventory after key is assigned (reduces available count)
+    const ProductInventoryService = require('../../services/ProductInventoryService');
+    await ProductInventoryService.updateProductInventory(productId, connection);
 
     await connection.commit();
 

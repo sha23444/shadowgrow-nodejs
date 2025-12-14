@@ -1,5 +1,29 @@
 const { pool } = require("../../../config/database");
 
+async function getBaseCurrencyInfo() {
+  try {
+    const [rows] = await pool.execute(
+      `SELECT option_name, option_value 
+       FROM res_options 
+       WHERE option_name IN ('currency', 'currency_symbol')`
+    );
+
+    const currencyRow = rows.find(row => row.option_name === 'currency');
+    const symbolRow = rows.find(row => row.option_name === 'currency_symbol');
+
+    return {
+      code: currencyRow ? currencyRow.option_value : 'USD',
+      symbol: symbolRow ? symbolRow.option_value : '$'
+    };
+  } catch (error) {
+    console.error('Error fetching base currency info:', error);
+    return {
+      code: 'USD',
+      symbol: '$'
+    };
+  }
+}
+
 async function getAllOrderList(req, res) {
   const { id } = req.user; // User ID from the request
   const page = parseInt(req.query.page, 10) || 1; // Current page, default to 1
@@ -10,8 +34,14 @@ async function getAllOrderList(req, res) {
 
   try {
     // Build the WHERE clause for filtering
-    let whereClause = "WHERE o.user_id = ? AND (o.order_id LIKE ?) AND o.order_status != ?";
-    let queryParams = [id, `%${search}%`, 7]; // Exclude completed orders (status = 7)
+    let whereClause = "WHERE o.user_id = ?";
+    let queryParams = [id];
+    
+    // Add search filter if provided
+    if (search) {
+      whereClause += " AND (o.order_id LIKE ?)";
+      queryParams.push(`%${search}%`);
+    }
 
     if (status) {
       whereClause += " AND o.order_status = ?";
@@ -110,8 +140,8 @@ async function getAllOrderList(req, res) {
           }
         }
 
-        // Fetch digital products if applicable
-        if (item_types.includes(3)) {
+        // Fetch products if applicable (both digital type 3 and physical type 6)
+        if (item_types.includes(3) || item_types.includes(6)) {
           const [products] = await pool.execute(
             `
               SELECT 
@@ -120,6 +150,9 @@ async function getAllOrderList(req, res) {
                 rp.product_name, 
                 rp.sale_price, 
                 rp.slug,
+                rp.is_digital_download,
+                rp.requires_activation_key,
+                rp.digital_file_url,
                 m.file_name AS image
               FROM res_uproducts AS up
               INNER JOIN res_products AS rp ON up.product_id = rp.product_id
@@ -128,6 +161,28 @@ async function getAllOrderList(req, res) {
             `,
             [order_id, id]
           );
+
+          // Fetch activation keys for products that require them
+          for (const product of products) {
+            if (product.requires_activation_key === 1 || product.requires_activation_key === true) {
+              const [activationKeys] = await pool.execute(
+                `
+                  SELECT activation_key, key_type, status, used_at
+                  FROM res_product_activation_keys
+                  WHERE product_id = ? AND order_id = ? AND user_id = ?
+                  ORDER BY used_at DESC
+                `,
+                [product.product_id, order_id, id]
+              );
+              
+              product.activation_keys = activationKeys.map(key => ({
+                key: key.activation_key,
+                type: key.key_type,
+                status: key.status,
+                used_at: key.used_at
+              }));
+            }
+          }
 
           if (products.length) {
             order.products.push(...products);
@@ -308,11 +363,15 @@ async function getOrderDetails(req, res) {
       console.error('Error parsing shipping_address:', e);
     }
 
+    // Get base currency (store default currency)
+    const baseCurrency = await getBaseCurrencyInfo();
+
     // Initialize details
     const orderDetails = {
       ...order,
       billing_address: billingAddress,
       shipping_address: shippingAddress,
+      base_currency: baseCurrency, // Store default currency
       products: [],
       topups: [],
       files: [],
@@ -337,8 +396,8 @@ async function getOrderDetails(req, res) {
       }
     }
 
-    // Fetch products if applicable
-    if (order.item_types.includes(3)) {
+    // Fetch products if applicable (both digital type 3 and physical type 6)
+    if (order.item_types.includes(3) || order.item_types.includes(6)) {
       const [products] = await pool.execute(
         `
           SELECT 
@@ -348,6 +407,14 @@ async function getOrderDetails(req, res) {
             rp.product_name,
             rp.sale_price,
             rp.slug,
+            rp.is_digital_download,
+            rp.requires_activation_key,
+            rp.requires_manual_processing,
+            rp.digital_file_url,
+            rp.digital_delivery_time,
+            rp.delivery_instructions,
+            rp.download_limit,
+            rp.download_expiry_days,
             m.file_name AS image
           FROM res_uproducts AS up
           INNER JOIN res_products AS rp ON up.product_id = rp.product_id
@@ -356,6 +423,47 @@ async function getOrderDetails(req, res) {
         `,
         [order_id, id]
       );
+
+      // Parse meta field (custom fields) for each product
+      for (const product of products) {
+        // Parse meta field which contains custom field values
+        if (product.meta) {
+          try {
+            product.custom_fields = typeof product.meta === 'string' 
+              ? JSON.parse(product.meta) 
+              : product.meta;
+          } catch (e) {
+            console.error('Error parsing product meta:', e);
+            product.custom_fields = {};
+          }
+        } else {
+          product.custom_fields = {};
+        }
+
+        if (product.requires_activation_key === 1 || product.requires_activation_key === true) {
+          const [activationKeys] = await pool.execute(
+            `
+              SELECT 
+                activation_key,
+                key_type,
+                status,
+                used_at
+              FROM res_product_activation_keys
+              WHERE product_id = ? AND order_id = ? AND user_id = ?
+              ORDER BY used_at DESC
+            `,
+            [product.product_id, order_id, id]
+          );
+          
+          // Add activation keys to product object
+          product.activation_keys = activationKeys.map(key => ({
+            key: key.activation_key,
+            type: key.key_type,
+            status: key.status,
+            used_at: key.used_at
+          }));
+        }
+      }
 
       if (products.length) {
         orderDetails.products.push(...products);

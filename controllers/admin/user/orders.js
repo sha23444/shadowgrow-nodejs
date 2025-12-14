@@ -162,8 +162,8 @@ async function getAllOrderList(req, res) {
           }
         }
 
-        // Fetch digital products if applicable
-        if (item_types.includes(3)) {
+        // Fetch products if applicable (both digital type 3 and physical type 6)
+        if (item_types.includes(3) || item_types.includes(6)) {
           const [products] = await pool.execute(
             `
               SELECT 
@@ -265,8 +265,8 @@ async function getOrderDetails(req, res) {
       }
     }
 
-    // Fetch products if applicable
-    if (order.item_types.includes(3)) {
+    // Fetch products if applicable (both digital type 3 and physical type 6)
+    if (order.item_types.includes(3) || order.item_types.includes(6)) {
       const [products] = await pool.execute(
         `
           SELECT 

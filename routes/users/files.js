@@ -25,6 +25,7 @@ router.put('/file/visit', digitalFilesController.incrementFileVisit);
 router.get("/file/download/featured", authenticateUser, downloadFileController.downloadFeaturedFile);
 router.get("/file/download/free", authenticateUser, downloadFileController.downloadFreeFile);
 router.get("/file/download/paid", authenticateUser, downloadFileController.downloadPaidFile);
+router.get("/product/download", authenticateUser, downloadFileController.downloadDigitalProduct);
 router.post("/devices/trust", authenticateUser, downloadFileController.trustDevice);
 
 router.get("/file/download/link", authenticateUser, downloadFileController.downloadFile);

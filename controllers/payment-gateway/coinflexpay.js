@@ -616,19 +616,27 @@ async function processOrderInternally(orderId, paymentResult) {
 
         const transactionId = transactionResult.insertId;
 
-        // Update order
-        await connection.execute(
-            "UPDATE res_orders SET payment_status = ?, amount_paid = ?, order_status = ?, transaction_id = ? WHERE order_id = ?",
-            [2, paymentAmount, 7, transactionId, orderId]
-        );
-
-        // Process order or add credits
+        // Parse item types first to determine order status
         let itemTypes;
         try {
             itemTypes = JSON.parse(order.item_types);
         } catch (err) {
             throw new Error("Invalid item types in order");
         }
+
+        // Determine order status: Physical products (item_type 6) should remain Pending (1) for admin approval
+        // Digital products can be Completed (7) immediately, EXCEPT if they require manual processing
+        const { hasManualProcessingProducts } = require('./helper');
+        const hasManualProcessing = await hasManualProcessingProducts(orderId, connection);
+        const orderStatus = (itemTypes.includes(6) || hasManualProcessing) ? 1 : 7;
+
+        // Update order
+        await connection.execute(
+            "UPDATE res_orders SET payment_status = ?, amount_paid = ?, order_status = ?, transaction_id = ? WHERE order_id = ?",
+            [2, paymentAmount, orderStatus, transactionId, orderId]
+        );
+
+        // Process order or add credits
 
         if (itemTypes.includes(5)) {
             try {

@@ -432,11 +432,8 @@ async function fetchPayment(req, res) {
     // Update order
     const paidAmount = payment.amount / 100;
 
-    await connection.execute(
-      "UPDATE res_orders SET payment_status = ?, amount_paid = ?, order_status = ?, transaction_id = ? WHERE order_id = ?",
-      [2, paidAmount, 7, transactionId, order_id]
-    );
-
+    // Determine order status: Physical products (item_type 6) should remain Pending (1) for admin approval
+    // Digital products can be Completed (7) immediately, EXCEPT if they require manual processing
     let itemTypes;
     try {
       itemTypes = JSON.parse(order.item_types);
@@ -447,6 +444,19 @@ async function fetchPayment(req, res) {
         message: "Invalid item types in order.",
       });
     }
+
+    // Check if order has manual processing products
+    const { hasManualProcessingProducts } = require('./helper');
+    const hasManualProcessing = await hasManualProcessingProducts(order_id, connection);
+
+    // If order contains physical products (item_type 6) OR manual processing products, keep it as Pending (1)
+    // Otherwise, mark as Completed (7) for digital products
+    const orderStatus = (itemTypes.includes(6) || hasManualProcessing) ? 1 : 7;
+
+    await connection.execute(
+      "UPDATE res_orders SET payment_status = ?, amount_paid = ?, order_status = ?, transaction_id = ? WHERE order_id = ?",
+      [2, paidAmount, orderStatus, transactionId, order_id]
+    );
 
     // Process order or add credits
     if (itemTypes.includes(5)) {
@@ -631,10 +641,22 @@ async function webhook(req, res) {
             }
           }
           
+          // Determine order status: Physical products (item_type 6) should remain Pending (1) for admin approval
+          // Digital products can be Completed (7) immediately, EXCEPT if they require manual processing
+          const { hasManualProcessingProducts } = require('./helper');
+          let itemTypes = [];
+          try {
+            itemTypes = order.item_types ? JSON.parse(order.item_types) : [];
+          } catch (err) {
+            itemTypes = [];
+          }
+          const hasManualProcessing = await hasManualProcessingProducts(orderId, connection);
+          const orderStatus = (itemTypes.includes(6) || hasManualProcessing) ? 1 : 7;
+          
           // Update order status to paid
           await connection.execute(
-            "UPDATE res_orders SET payment_status = 2, order_status = 7, amount_paid = ? WHERE order_id = ?",
-            [payment.amount / 100, orderId]
+            "UPDATE res_orders SET payment_status = 2, order_status = ?, amount_paid = ? WHERE order_id = ?",
+            [orderStatus, payment.amount / 100, orderId]
           );
           
           // Insert transaction record
@@ -662,17 +684,7 @@ async function webhook(req, res) {
           );
           
           // Process the order (activate services, send emails, etc.)
-          let itemTypes;
-          try {
-            itemTypes = JSON.parse(order.item_types);
-          } catch (parseError) {
-            await connection.rollback();
-            return res.status(500).json({
-              status: "fail",
-              message: "Invalid item types in order.",
-            });
-          }
-          
+          // itemTypes was already declared above, reuse it
           // Process order or add credits based on item types
           if (itemTypes.includes(5)) {
             try {

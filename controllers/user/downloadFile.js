@@ -925,6 +925,95 @@ async function downloadFile(req, res) {
   }
 }
 
+// Download digital product (product with digital_file_url)
+async function downloadDigitalProduct(req, res) {
+  const userId = req.user?.id;
+  const { product_id, order_id } = req.query;
+
+  if (!product_id || !order_id) {
+    return res.status(400).json({
+      status: "error",
+      message: "Missing product_id or order_id",
+    });
+  }
+
+  try {
+    // Verify user owns the order and product is in the order
+    const [orderRows] = await pool.execute(
+      `SELECT o.order_id, o.user_id, o.order_status 
+       FROM res_orders o
+       INNER JOIN res_uproducts up ON o.order_id = up.order_id
+       WHERE o.order_id = ? AND o.user_id = ? AND up.product_id = ?`,
+      [order_id, userId, product_id]
+    );
+
+    if (orderRows.length === 0) {
+      return res.status(404).json({
+        status: "error",
+        message: "Product not found in your orders",
+      });
+    }
+
+    // Get product details
+    const [productRows] = await pool.execute(
+      `SELECT product_id, product_name, digital_file_url, download_limit, download_expiry_days
+       FROM res_products
+       WHERE product_id = ? AND is_digital_download = 1 AND digital_file_url IS NOT NULL AND digital_file_url != ''`,
+      [product_id]
+    );
+
+    if (productRows.length === 0) {
+      return res.status(404).json({
+        status: "error",
+        message: "Digital product not found or does not have a download URL",
+      });
+    }
+
+    const product = productRows[0];
+
+    // Check download access using DigitalProductDeliveryService
+    const DigitalProductDeliveryService = require("../../services/DigitalProductDeliveryService");
+    const accessCheck = await DigitalProductDeliveryService.validateDownloadAccess(
+      userId,
+      product_id,
+      order_id
+    );
+
+    if (!accessCheck.allowed) {
+      return res.status(403).json({
+        status: "error",
+        message: accessCheck.reason || "Download access denied",
+      });
+    }
+
+    // Check download limit if exists
+    if (accessCheck.downloadLimit && accessCheck.downloadCount >= accessCheck.downloadLimit) {
+      return res.status(403).json({
+        status: "error",
+        message: `Download limit of ${accessCheck.downloadLimit} reached`,
+      });
+    }
+
+    // Increment download count
+    await DigitalProductDeliveryService.incrementDownloadCount(userId, product_id, order_id);
+
+    // Return the download URL (this will be used by frontend to trigger download)
+    return res.status(200).json({
+      status: "success",
+      downloadUrl: product.digital_file_url,
+      productName: product.product_name,
+      downloadCount: (accessCheck.downloadCount || 0) + 1,
+      downloadLimit: accessCheck.downloadLimit,
+    });
+  } catch (error) {
+    console.error("Error downloading digital product:", error);
+    return res.status(500).json({
+      status: "error",
+      message: "Internal server error",
+    });
+  }
+}
+
 async function trustDevice(req, res) {
   try {
     const userId = req.user?.id;
@@ -1181,6 +1270,7 @@ module.exports = {
   downloadFeaturedFile,
   downloadFreeFile,
   downloadPaidFile,
+  downloadDigitalProduct,
   trustDevice,
   getTopAndRecentFiles,
   getUserTrustedDevices,

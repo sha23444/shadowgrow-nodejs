@@ -228,8 +228,8 @@ class PDFInvoiceService {
     const items = [];
 
     try {
-      // Get products
-      if (itemTypes.includes(3)) {
+      // Get products (both digital type 3 and physical type 6)
+      if (itemTypes.includes(3) || itemTypes.includes(6)) {
         const [products] = await pool.execute(
           `
           SELECT 

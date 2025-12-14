@@ -282,7 +282,8 @@ async function getInvoiceDetails(req, res) {
       if (packages.length) invoiceDetails.packages.push(...packages);
     }
 
-    if (itemTypes.includes(3)) {
+    // Fetch products if applicable (both digital type 3 and physical type 6)
+    if (itemTypes.includes(3) || itemTypes.includes(6)) {
       // Products
       const [products] = await pool.execute(
         `

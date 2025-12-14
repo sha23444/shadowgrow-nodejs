@@ -231,7 +231,8 @@ async function getUserInvoiceDetails(req, res) {
       if (packages.length) invoiceDetails.packages.push(...packages);
     }
 
-    if (itemTypes.includes(3)) {
+    // Fetch products if applicable (both digital type 3 and physical type 6)
+    if (itemTypes.includes(3) || itemTypes.includes(6)) {
       // Products
       const [products] = await pool.execute(
         `
@@ -448,10 +449,131 @@ async function getUserInvoicePDF(req, res) {
   }
 }
 
+/**
+ * Generate invoice PDF from order_id (creates invoice if it doesn't exist)
+ */
+async function generateInvoiceFromOrderId(req, res) {
+  const { id } = req.user; // User ID from authentication
+  const { order_id } = req.params;
+
+  try {
+    // Verify order belongs to user and is completed
+    const [[order]] = await pool.execute(
+      "SELECT * FROM res_orders WHERE order_id = ? AND user_id = ?",
+      [order_id, id]
+    );
+
+    if (!order) {
+      return res.status(404).json({
+        status: "error",
+        message: "Order not found",
+      });
+    }
+
+    // Only create invoice for completed orders (status = 7)
+    if (order.order_status !== 7) {
+      return res.status(400).json({
+        status: "error",
+        message: `Invoice can only be generated for completed orders. Order status: ${order.order_status}`,
+      });
+    }
+
+    // Check if invoice already exists first
+    const [[existingInvoice]] = await pool.execute(
+      "SELECT invoice_id FROM res_invoices WHERE order_id = ? AND user_id = ?",
+      [order_id, id]
+    );
+
+    if (existingInvoice) {
+      console.log(`Invoice ${existingInvoice.invoice_id} already exists for order ${order_id}`);
+      // Use existing invoice
+      const pdfService = new PDFInvoiceService();
+      const result = await pdfService.generatePDF(existingInvoice.invoice_id);
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${result.fileName}"`);
+      res.setHeader('Content-Length', result.fileSize);
+      
+      const fs = require('fs');
+      const fileStream = fs.createReadStream(result.filePath);
+      fileStream.pipe(res);
+      return;
+    }
+
+    // Invoice doesn't exist, try to create it
+    const InvoiceService = require("../../services/InvoiceService");
+    let invoiceId = null;
+    let invoiceCreationError = null;
+    
+    try {
+      console.log(`Attempting to create invoice for order ${order_id}...`);
+      invoiceId = await InvoiceService.createInvoiceIfNeeded(order_id);
+      console.log(`Invoice creation result for order ${order_id}:`, invoiceId ? `Created invoice ${invoiceId}` : 'Invoice already exists or not needed');
+    } catch (invoiceError) {
+      console.error(`Error creating invoice for order ${order_id}:`, invoiceError);
+      console.error('Error stack:', invoiceError.stack);
+      invoiceCreationError = invoiceError;
+    }
+
+    // Get invoice_id (either newly created or existing)
+    const [[invoice]] = await pool.execute(
+      "SELECT invoice_id FROM res_invoices WHERE order_id = ? AND user_id = ?",
+      [order_id, id]
+    );
+
+    if (!invoice) {
+      const errorMessage = invoiceCreationError 
+        ? `Failed to create invoice: ${invoiceCreationError.message}` 
+        : "Failed to create or find invoice for this order";
+      
+      console.error(`No invoice found for order ${order_id} after creation attempt.`);
+      if (invoiceCreationError) {
+        console.error('Creation error details:', invoiceCreationError.message);
+        console.error('Creation error stack:', invoiceCreationError.stack);
+      }
+      
+      // Return detailed error in development, generic in production
+      const errorResponse = {
+        status: "error",
+        message: errorMessage
+      };
+      
+      if (process.env.NODE_ENV === 'development' || process.env.NODE_ENV !== 'production') {
+        errorResponse.details = invoiceCreationError ? invoiceCreationError.message : 'Unknown error';
+        if (invoiceCreationError && invoiceCreationError.stack) {
+          errorResponse.stack = invoiceCreationError.stack;
+        }
+      }
+      
+      return res.status(500).json(errorResponse);
+    }
+
+    // Generate PDF
+    const pdfService = new PDFInvoiceService();
+    const result = await pdfService.generatePDF(invoice.invoice_id);
+
+    // Return PDF file
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${result.fileName}"`);
+    res.setHeader('Content-Length', result.fileSize);
+    
+    const fs = require('fs');
+    const fileStream = fs.createReadStream(result.filePath);
+    fileStream.pipe(res);
+  } catch (error) {
+    console.error("Error generating invoice from order:", error);
+    return res.status(500).json({
+      status: "error",
+      message: "Failed to generate invoice",
+    });
+  }
+}
+
 module.exports = {
   getAllUserInvoices,
   getUserInvoiceDetails,
   getUserInvoiceStatistics,
   generateUserInvoicePDF,
   getUserInvoicePDF,
+  generateInvoiceFromOrderId,
 };

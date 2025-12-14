@@ -373,8 +373,8 @@ async function fetchOrderDetails(orderId, userId) {
     });
   }
   
-  // Products (type 3)
-  if (itemTypes.includes(3)) {
+  // Products (both digital type 3 and physical type 6)
+  if (itemTypes.includes(3) || itemTypes.includes(6)) {
     const [products] = await pool.execute(
       `SELECT rp.product_name, up.quantity, rp.sale_price
        FROM res_uproducts up

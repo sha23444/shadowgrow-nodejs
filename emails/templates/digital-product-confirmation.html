@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Digital Product Order Confirmation</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    
+    body, html {
+      margin: 0;
+      padding: 0;
+      font-family: 'Inter', Arial, sans-serif;
+      background-color: #f5f7fa;
+    }
+    
+    .container {
+      max-width: 650px;
+      margin: 40px auto;
+      padding: 40px;
+      background: #ffffff;
+      border-radius: 16px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.06);
+    }
+    
+    .header {
+      text-align: center;
+      margin-bottom: 30px;
+    }
+    
+    .header h1 {
+      margin: 0;
+      font-size: 28px;
+      font-weight: 700;
+      color: #1a1a1a;
+      line-height: 1.3;
+    }
+    
+    .greeting {
+      font-size: 16px;
+      line-height: 1.6;
+      color: #4a4a4a;
+      margin-bottom: 30px;
+    }
+    
+    .order-info {
+      background-color: #f8fafc;
+      border-radius: 12px;
+      padding: 20px 25px;
+      margin-bottom: 30px;
+    }
+    
+    .order-info-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 0;
+      border-bottom: 1px solid #eef1f6;
+    }
+    
+    .order-info-row:last-child {
+      border-bottom: none;
+    }
+    
+    .order-info-label {
+      font-weight: 600;
+      color: #333;
+    }
+    
+    .order-info-value {
+      color: #555;
+    }
+    
+    .success-box {
+      background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%);
+      border: 2px solid #10b981;
+      border-radius: 12px;
+      padding: 25px;
+      margin: 30px 0;
+      text-align: center;
+    }
+    
+    .success-icon {
+      font-size: 48px;
+      margin-bottom: 15px;
+    }
+    
+    .success-message {
+      font-size: 18px;
+      font-weight: 600;
+      color: #065f46;
+      margin-bottom: 10px;
+    }
+    
+    .success-submessage {
+      font-size: 14px;
+      color: #047857;
+    }
+    
+    .instructions {
+      background-color: #f0f9ff;
+      border-left: 4px solid #0ea5e9;
+      padding: 16px 20px;
+      border-radius: 8px;
+      font-size: 15px;
+      color: #0c4a6e;
+      margin: 25px 0;
+    }
+    
+    .instructions strong {
+      display: block;
+      margin-bottom: 8px;
+      color: #075985;
+    }
+    
+    .cta {
+      text-align: center;
+      margin: 40px 0;
+    }
+    
+    .cta-btn {
+      display: inline-block;
+      padding: 14px 28px;
+      background-color: #10b981;
+      color: white !important;
+      font-size: 16px;
+      font-weight: 500;
+      text-decoration: none;
+      border-radius: 10px;
+      transition: all 0.2s ease;
+    }
+    
+    .cta-btn:hover {
+      background-color: #059669;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+    }
+    
+    .footer {
+      text-align: center;
+      color: #64748b;
+      font-size: 14px;
+      margin-top: 40px;
+      padding-top: 20px;
+      border-top: 1px solid #eef1f6;
+    }
+    
+    .footer a {
+      color: #10b981;
+      text-decoration: none;
+    }
+    
+    .footer a:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <h1>✅ Order Confirmed!</h1>
+    </div>
+
+    <!-- Greeting -->
+    <div class="greeting">
+      <p>Hi {{userName}},</p>
+      <p>Thank you for your purchase! Your digital product order has been confirmed.</p>
+    </div>
+
+    <!-- Order Info -->
+    <div class="order-info">
+      <div class="order-info-row">
+        <div class="order-info-label">Order Number:</div>
+        <div class="order-info-value">#{{orderNumber}}</div>
+      </div>
+      <div class="order-info-row">
+        <div class="order-info-label">Product:</div>
+        <div class="order-info-value">{{productName}}</div>
+      </div>
+      <div class="order-info-row">
+        <div class="order-info-label">Order Date:</div>
+        <div class="order-info-value">{{orderDate}}</div>
+      </div>
+      <div class="order-info-row">
+        <div class="order-info-label">Delivery Time:</div>
+        <div class="order-info-value">{{deliveryTime}}</div>
+      </div>
+    </div>
+
+    <!-- Success Box -->
+    <div class="success-box">
+      <div class="success-icon">🎉</div>
+      <div class="success-message">Your Order is Confirmed!</div>
+      <div class="success-submessage">Your digital product is being processed and will be available shortly.</div>
+    </div>
+
+    <!-- Instructions -->
+    <div class="instructions">
+      <strong>📋 Delivery Instructions:</strong>
+      <p>{{deliveryInstructions}}</p>
+    </div>
+
+    <!-- CTA -->
+    <div class="cta">
+      <a href="{{orderUrl}}" class="cta-btn">View Order Details</a>
+    </div>
+
+    <!-- Footer / Support -->
+    <div class="footer">
+      Need help? Contact us at <a href="mailto:support@shadowgrow.com">support@shadowgrow.com</a>
+    </div>
+  </div>
+</body>
+</html>
